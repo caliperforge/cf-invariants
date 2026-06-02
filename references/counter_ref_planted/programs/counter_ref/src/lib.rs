@@ -13,7 +13,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
-declare_id!("CntrRef11111111111111111111111111111111111");
+declare_id!("Cn111tRef1111111111111111111111111111111111");
 
 #[program]
 pub mod counter_ref {

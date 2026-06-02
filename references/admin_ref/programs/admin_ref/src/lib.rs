@@ -15,7 +15,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
-declare_id!("AdmnRef11111111111111111111111111111111111");
+declare_id!("Ad111tRef1111111111111111111111111111111111");
 
 #[program]
 pub mod admin_ref {

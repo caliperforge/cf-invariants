@@ -1,5 +1,7 @@
 target/
 Cargo.lock.bak
+references/*/Cargo.lock
+references/*/fuzz/*/Cargo.lock
 .cf-invariants-anchor/ai-log/
 *.log
 .DS_Store
