@@ -1,0 +1,31 @@
+[package]
+name = "cf-invariants-anchor-ai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Anthropic-backed AI invariant suggester for cf-invariants-anchor. Live path is opt-in via env (CF_INVARIANTS_ANCHOR_AI_LIVE=1 + ANTHROPIC_API_KEY); CI uses MockTransport."
+
+[dependencies]
+cf-invariants-anchor-core    = { path = "../cf-invariants-anchor-core" }
+cf-invariants-anchor-suggest = { path = "../cf-invariants-anchor-suggest" }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+async-trait = "0.1"
+# `reqwest` is gated behind the `live` feature so workspace builds without it
+# stay light and CI's workspace-tests doesn't pull native TLS at all.
+reqwest     = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+tokio       = { version = "1", features = ["macros", "rt"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[features]
+default = []
+# Compiles the LiveAnthropicTransport (reqwest + tokio). Off by default so
+# `cargo test --workspace` stays hermetic; the CLI binary turns it on via
+# its own `live-ai` feature when shipped.
+live = ["dep:reqwest", "dep:tokio"]

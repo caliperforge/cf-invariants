@@ -4,53 +4,77 @@ cf-invariants-anchor is built with AI assistance. This document is the
 in-repo detail on what the AI module does, where the audit log lives,
 and how to disable AI involvement.
 
-## What is AI-suggested today (Phase 0)
+## What is AI-suggested today
 
-**Nothing in the runtime path.** Phase 0 ships the *heuristic*
-suggester only — pure structural reasoning over the parsed
-ContractSurface. Every `InvariantCandidate` emitted by the Phase-0
-build carries:
+**Phase 1 AI suggester is live.** The default `cf-invariants-anchor suggest <idl>`
+still runs the heuristic suggester (no AI call) — that path produces
+`InvariantSource::Heuristic { suggester_version }` candidates and emits
+no AI-disclosure banner. The new flag
 
+```sh
+cf-invariants-anchor suggest <idl> --ai
 ```
-source: InvariantSource::Heuristic { suggester_version: "0.1.0" }
-```
 
-The scorecard renderer's AI-disclosure banner is therefore dormant
-on Phase-0 reference runs. The banner's behaviour is still exercised
-by unit tests (`ai_disclosure_banner_when_ai_count_positive`,
-`ai_disclosure_omitted_when_no_ai_suggestions`,
-`ai_source_renders_ai_disclosure_banner`).
-
-## What will be AI-suggested in Phase 1
-
-Phase 1 will add an Anthropic Claude Sonnet adapter that calls the
-Anthropic API with a versioned prompt (`prompts/invariant_suggestion_v1.txt`)
-and the parsed ContractSurface, and wraps the returned candidates with:
+routes through the new `cf-invariants-anchor-ai` crate. Every candidate
+returned through this path carries:
 
 ```
 source: InvariantSource::AiSuggested {
-    model: "claude-sonnet-4-...",
+    model: "claude-sonnet-4-6",
     prompt_version: "invariant_suggestion_v1",
     timestamp_utc: "<ISO-8601>",
 }
 ```
 
-When that lands:
+and the scorecard renderer's AI-disclosure banner fires whenever any
+such candidate is part of a run. The renderer's banner gate is type-
+driven (`Scorecard.ai_suggestions_included > 0` is computed by counting
+candidates whose source `.is_ai_suggested()`), so there is no in-band
+way to bypass disclosure.
 
-- Every AI-suggested candidate file carries an
-  `[AI-SUGGESTED, UNVERIFIED]` header naming model, prompt version,
-  timestamp.
-- The scorecard markdown emits an AI-disclosure banner whenever
-  `Scorecard.ai_suggestions_included > 0`.
-- Each Anthropic API call writes an audit record to
-  `.cf-invariants-anchor/ai-log/<timestamp>.json`
-  (model, prompt version, token counts, response SHA-256 hash) —
-  the directory is `.gitignore`d by default.
-- The CI test suite uses `MockTransport`; live calls only fire when
-  both `CF_INVARIANTS_ANCHOR_AI_LIVE=1` and `ANTHROPIC_API_KEY` are set.
+## Live vs. mock — what fires when
 
-The shape mirrors the cf-invariants (Cairo) AI path one-for-one so
-operators using both have a single mental model.
+There are two transports behind the same `AnthropicTransport` trait:
+
+- **`MockTransport`** — default. Returns a canned response derived
+  deterministically from the heuristic suggester. Used when:
+  - the CLI is built without `--features live-ai`, OR
+  - `CF_INVARIANTS_ANCHOR_AI_LIVE` is unset / not equal to `1`, OR
+  - `ANTHROPIC_API_KEY` is unset.
+
+  This is the path CI runs — it exercises the full AI-provenance
+  pipeline (parse → tag `AiSuggested` → write audit log) without
+  needing an API key or network access, so the green badge is
+  reproducible by anyone.
+
+- **`LiveAnthropicTransport`** — actual Anthropic Messages API. Used
+  when ALL of the following hold:
+  - the CLI was built with `--features live-ai`,
+  - `CF_INVARIANTS_ANCHOR_AI_LIVE=1` is set,
+  - `ANTHROPIC_API_KEY=...` is set.
+
+  The live path uses Claude Sonnet 4.6 with the pinned prompt at
+  `prompts/invariant_suggestion_v1.txt`. Per-call cost is bounded at
+  `$0.05` (the `PER_CALL_BUDGET_USD` constant); over-budget calls
+  return `AiError::BudgetExceeded` before any state is written.
+
+## Audit log
+
+Every AI call (live OR mock) writes a JSON entry to
+`.cf-invariants-anchor/ai-log/<timestamp>.json`. The entry records:
+
+- timestamp (UTC ISO-8601, seconds),
+- model id,
+- prompt version,
+- program name,
+- token counts (input + output),
+- cost in USD,
+- SHA-256 hex digest of the raw response body (so a single suggestion
+  can be re-reconstructed for review without re-storing the response),
+- count of returned candidates.
+
+The directory is `.gitignore`d by default. Override with
+`cf-invariants-anchor suggest ... --audit-dir <path>`.
 
 ## AI assistance in **authoring** this codebase
 
@@ -60,14 +84,25 @@ distinct from the AI **runtime suggestion** path described above —
 the former is one-time at authorship; the latter is a deliberate,
 disclosed, audit-logged runtime feature.
 
-## How to disable AI involvement
+## How to disable AI involvement entirely
 
-- **Default build**: heuristic suggester only. No outbound calls, no API keys required.
-- **Phase 1 AI path**: requires explicit opt-in via `CF_INVARIANTS_ANCHOR_AI_LIVE=1` + `ANTHROPIC_API_KEY`. Unset either and the live transport short-circuits to `MockTransport`.
+- **Default build**: heuristic suggester only. No outbound calls, no
+  API keys required. The `--ai` flag is rejected at config time if
+  the binary was built without `--features live-ai` AND
+  `CF_INVARIANTS_ANCHOR_AI_LIVE=1` — well, more precisely, with the
+  live feature off the mock transport is used; users that want
+  guaranteed-no-AI-tag output simply omit the `--ai` flag.
+- **Live AI off, mock disclosure-tagged candidates off**: omit
+  `--ai`. Default `suggest` returns `Heuristic`-tagged candidates
+  only.
 
 ## Cost budget
 
-Phase 1 will inherit cf-invariants's per-call cap (**$0.05** per call) and three-contract demo cap (**$0.25**), asserted by a `cost_budget` regression test in `cf-invariants-anchor-ai`.
+The per-call cap is `PER_CALL_BUDGET_USD = $0.05`. The cf-invariants
+(Cairo) sibling enforces a cumulative `WEEK2_DEMO_BUDGET_USD = $0.25`
+across the three-contract demo; the Anchor sibling does not yet
+ship a cross-call cumulative cap — it is queued for Phase 2 alongside
+the second reference contract pair.
 
 ## Full policy
 

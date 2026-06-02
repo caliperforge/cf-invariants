@@ -7,6 +7,7 @@ members = [
     "crates/cf-invariants-anchor-suggest",
     "crates/cf-invariants-anchor-emit",
     "crates/cf-invariants-anchor-report",
+    "crates/cf-invariants-anchor-ai",
 ]
 
 [workspace.package]

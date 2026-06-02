@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "cf-invariants-anchor CLI: ingest Anchor IDL, suggest invariants, emit Crucible-compatible fuzz fixtures."
+description = "cf-invariants-anchor CLI: ingest Anchor IDL, suggest invariants (heuristic or AI), emit Crucible-compatible fuzz fixtures."
 
 [[bin]]
 name = "cf-invariants-anchor"
@@ -18,6 +18,17 @@ cf-invariants-anchor-idl     = { path = "../cf-invariants-anchor-idl" }
 cf-invariants-anchor-suggest = { path = "../cf-invariants-anchor-suggest" }
 cf-invariants-anchor-emit    = { path = "../cf-invariants-anchor-emit" }
 cf-invariants-anchor-report  = { path = "../cf-invariants-anchor-report" }
+cf-invariants-anchor-ai      = { path = "../cf-invariants-anchor-ai" }
 serde_json = { workspace = true }
 clap       = { workspace = true }
 anyhow     = { workspace = true }
+tokio      = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = []
+# Compiles the LiveAnthropicTransport path into the CLI. Default build
+# (and CI's workspace-tests) leaves it OFF so a green badge requires
+# no API key and no network access. Operators that want to fire live
+# Claude calls build with `--features live-ai` and set
+# `CF_INVARIANTS_ANCHOR_AI_LIVE=1` + `ANTHROPIC_API_KEY` at run time.
+live-ai = ["cf-invariants-anchor-ai/live"]

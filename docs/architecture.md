@@ -14,11 +14,13 @@ Anchor IDL ingest → ranked invariant suggester (extensible class registry) →
          │
          ▼
   cf-invariants-anchor-suggest
-    ClassRegistry::phase0()
-      ├── BalanceConservation  (Phase 0)
-      ├── Monotonicity         (Phase 1)
-      ├── AccessControl        (Phase 1)
+    ClassRegistry::default()
+      ├── BalanceConservation  (shipping)
+      ├── MonotonicAccounting  (shipping)
+      ├── AccessControl        (shipping)
       └── OracleFreshness      (Phase 2)
+  cf-invariants-anchor-ai      (live OR mock)
+      └── wraps the same candidates with InvariantSource::AiSuggested
          │
          ▼
   Vec<InvariantCandidate> (ranked, source-tagged)
@@ -90,17 +92,28 @@ ranking framework, source-tagging, and emit-hint plumbing are class-agnostic.
 
 ## AI-disclosure path
 
-Phase 0 ships **no AI call on the default path** — the suggester is
-heuristic. Candidates carry `InvariantSource::Heuristic { suggester_version }`
-and the scorecard's AI-disclosure banner is dormant. The renderer
-machinery is still exercised end-to-end (tests cover both the
-banner-on and banner-off paths).
+Default `suggest` runs the heuristic suggester (no AI call). Candidates
+carry `InvariantSource::Heuristic { suggester_version }` and the
+scorecard's AI-disclosure banner is dormant.
 
-Phase 1 adds an `ai_propose` adapter (Anthropic Claude Sonnet,
-mirroring the cf-invariants Cairo path) that wraps the same
-candidate shape with `InvariantSource::AiSuggested { model,
-prompt_version, timestamp_utc }`. The renderer rule is type-enforced:
-the AI-disclosure line cannot be dropped whenever any
-`InvariantCandidate.source.is_ai_suggested()` is part of the run.
+The `suggest --ai` path routes through `cf-invariants-anchor-ai`,
+which wraps the same candidate shape with `InvariantSource::AiSuggested
+{ model, prompt_version, timestamp_utc }` and writes a JSON audit-log
+entry to `.cf-invariants-anchor/ai-log/<timestamp>.json` (timestamp,
+model, prompt version, token counts, cost in USD, SHA-256 of the raw
+response). Two transports sit behind the same trait:
+
+- `MockTransport` (default): returns a canned response derived from
+  the heuristic suggester. Used by CI and by anyone without an API
+  key — proves the full provenance + audit-log pipeline without a
+  live call.
+- `LiveAnthropicTransport` (feature-gated): calls Anthropic Messages
+  API with the pinned prompt at `prompts/invariant_suggestion_v1.txt`.
+  Compiled only with `--features live-ai`; activated only when
+  `CF_INVARIANTS_ANCHOR_AI_LIVE=1` AND `ANTHROPIC_API_KEY` is set.
+
+The renderer rule is type-enforced: the AI-disclosure line cannot be
+dropped whenever any `InvariantCandidate.source.is_ai_suggested()` is
+part of the run.
 
 See `docs/ai-disclosure.md`.

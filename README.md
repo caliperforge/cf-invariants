@@ -52,14 +52,24 @@ What is live in this build:
   IDL JSON into a typed contract surface (program id, instructions,
   scalar balance-bearing fields per stored account).
 - `cf-invariants-anchor suggest <idl>` — produces a ranked list of
-  candidate invariants. Phase 0 ships **one** class:
-  `balance_conservation`. The `InvariantClass` trait + `ClassRegistry`
-  are extensible so adding monotonicity / access-control / oracle-
-  freshness is a one-file change.
+  candidate invariants from the heuristic suggester. **Three classes
+  ship today**: `balance_conservation`, `monotonic_accounting`,
+  `access_control`. The `InvariantClass` trait + `ClassRegistry` keep
+  adding a fourth (oracle/freshness) a one-file change.
+- `cf-invariants-anchor suggest <idl> --ai` — routes through
+  `cf-invariants-anchor-ai` for AI-suggested candidates. Every returned
+  candidate carries `InvariantSource::AiSuggested { model,
+  prompt_version, timestamp_utc }`; a JSON audit-log entry is written
+  to `.cf-invariants-anchor/ai-log/<timestamp>.json` (token counts,
+  cost in USD, SHA-256 of response). Default transport is `MockTransport`
+  (deterministic, no API key, CI-safe); `LiveAnthropicTransport`
+  activates when the CLI is built with `--features live-ai` AND
+  `CF_INVARIANTS_ANCHOR_AI_LIVE=1` AND `ANTHROPIC_API_KEY` set.
 - `cf-invariants-anchor emit <idl> --target crucible` — renders a
-  Crucible-compatible fuzz fixture (`#[fuzz_fixture]` impl + a
-  `#[invariant_test]` function using `fuzz_assert_eq!`), with a
-  fixture-side ledger walked through every `action_*` arm.
+  Crucible-compatible fuzz fixture for the selected candidate. Each
+  class has its own emit shape: balance uses a fixture-side ledger +
+  `fuzz_assert_eq!`; monotonic uses a `last_seen_*` snapshot + `fuzz_assert_le!`;
+  access-control uses an attacker-keypair probe + sticky-flag assertion.
 - `--target trident` — Phase-1 stub. Emit returns an explanatory
   placeholder so the CLI surface is reachable without the Trident
   rendering being wired.
@@ -69,10 +79,11 @@ What is live in this build:
   transfers `amount` lamports but decrements `vault.amount` by
   `amount-1`. The emitted invariant catches the drift in 1 withdraw.
 - **Scorecard renderer** with the AI-disclosure banner emitted
-  whenever `ai_suggestions_included > 0` (Phase-0 reference runs
-  use the heuristic source, so the banner is dormant on the
-  reference scorecards — the renderer pathway is exercised by tests).
-- Workspace test suite (11 tests, `cargo test --workspace`).
+  whenever `ai_suggestions_included > 0`. The default reference run
+  uses the heuristic source so the banner is dormant on those
+  scorecards (the renderer pathway is exercised by tests); the
+  `--ai` flag fires the banner.
+- Workspace test suite (36 tests, `cargo test --workspace`).
 
 ## What it is not
 
@@ -196,10 +207,10 @@ siblings remain as authored reference for diffing.
 
 | Phase | Surface |
 |-------|---------|
-| **0 (this build)** | IDL ingest → ranked balance-conservation candidates → Crucible emit → scorecard renderer. Heuristic suggester only (no AI call). |
-| 1 | AI-suggested invariants (Anthropic Claude Sonnet path, mirroring cf-invariants Cairo: mock transport default, live behind env flag). Trident emit target. Monotonicity + access-control classes. |
-| 2 | Oracle-freshness class. CI scorecard-drift early warning. Shrinking. |
-| 3 | Multi-account-state surface (full account-mutability-set analysis instead of name-heuristic). |
+| **0** | IDL ingest → ranked balance-conservation candidates → Crucible emit → scorecard renderer. Heuristic suggester only. ✅ shipped. |
+| **1 (this build)** | AI-suggested invariants live (Anthropic Claude Sonnet path: MockTransport default, LiveAnthropicTransport behind `--features live-ai` + env). Monotonic + access-control classes added to the suggester + emit. ✅ in-tree. The new-classes reference contract pair + harness CI proof are queued for the next push (see `_handoff/PHASE2_PENDING.md`). |
+| 2 | New classes' `counter_ref` clean/planted pair + CI Crucible run proving each class catches its planted bug. Trident emit target. |
+| 3 | Oracle-freshness class. CI scorecard-drift early warning. Shrinking. Multi-account-state surface (full account-mutability-set analysis instead of name-heuristic). |
 
 ## Reporting issues, security contact
 
