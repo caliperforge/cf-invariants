@@ -1,0 +1,23 @@
+[package]
+name = "admin_ref"
+version = "0.1.0"
+edition = "2021"
+description = "cf-invariants-anchor reference: minimal Anchor vault with depositor-gated withdraw (access_control class — planted twin drops the authority check)."
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "admin_ref"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+test-sbf = []
+
+[dependencies]
+# Pinned to upstream Crucible v0.2.0 workspace.
+anchor-lang = "1.0.1"

@@ -31,20 +31,24 @@ the same operator.
 **Phase 0 — working artifact, pre-1.0.**
 
 > **Source of truth: the CI badge above.** GitHub Actions builds the
-> workspace, builds both vault reference programs via `cargo build-sbf`,
-> and runs the Crucible v0.2.0 harness on both on every push — asserting
-> 0 violations on the clean variant and ≥1 violation on the planted
-> variant. The captured scorecards from each run are uploaded as a CI
-> artifact and committed into `findings/vault_ref_{clean,planted}/scorecard.md`
+> workspace, builds all three reference program pairs via `cargo build-sbf`,
+> and runs the Crucible v0.2.0 harness on every (class × clean/planted)
+> cell on every push — asserting 0 violations on each clean variant
+> and ≥1 violation on each planted variant. The captured scorecards
+> from each run are uploaded as a CI artifact and committed into
+> `findings/{vault_ref,counter_ref,admin_ref}_{clean,planted}/scorecard.md`
 > once green. The `.expected.{json,md}` siblings remain as the authored
 > reference; the unsuffixed files are the real captures.
+>
+> Pairs currently proven in CI:
+> - `vault_ref` / `vault_ref_planted` — class `balance_conservation`
+> - `counter_ref` / `counter_ref_planted` — class `monotonic_accounting`
+> - `admin_ref` / `admin_ref_planted` — class `access_control`
 >
 > No "verified" claim in this repo is made by hand — if the badge is red,
 > the artifact is not green. See
 > [`findings/LIVE_VALIDATION_PENDING.md`](./findings/LIVE_VALIDATION_PENDING.md)
-> for the version-pin fix record (2026-06-01: `anchor-lang` repinned to
-> `1.0.1` to match Crucible v0.2.0; CI authored to prove it in the cloud,
-> not on the operator's host).
+> for the per-class validation status.
 
 What is live in this build:
 
@@ -73,11 +77,19 @@ What is live in this build:
 - `--target trident` — Phase-1 stub. Emit returns an explanatory
   placeholder so the CLI surface is reachable without the Trident
   rendering being wired.
-- **Reference contract pair** at `references/vault_ref/` and
-  `references/vault_ref_planted/`. The planted variant carries a
-  deliberate off-by-one on the conservation surface: `withdraw`
-  transfers `amount` lamports but decrements `vault.amount` by
-  `amount-1`. The emitted invariant catches the drift in 1 withdraw.
+- **Three reference contract pairs**, one per shipping class:
+  - `references/vault_ref{,_planted}` — `balance_conservation`. The
+    planted withdraw transfers `amount` lamports but decrements
+    `vault.amount` by `amount-1`; the conservation invariant catches
+    the drift in 1 withdraw.
+  - `references/counter_ref{,_planted}` — `monotonic_accounting`. Adds
+    a `lifetime_deposited: u64` ratchet field; the planted withdraw
+    decrements it on every call, regressing the lifetime counter.
+  - `references/admin_ref{,_planted}` — `access_control`. Clean
+    withdraw enforces `seeds = [b"vault", depositor.key().as_ref()]`
+    AND `has_one = depositor`; the planted variant drops both, so any
+    signer can drain any vault PDA. The emitted attacker-probe
+    fixture trips on the first successful unauthorized withdraw.
 - **Scorecard renderer** with the AI-disclosure banner emitted
   whenever `ai_suggestions_included > 0`. The default reference run
   uses the heuristic source so the banner is dormant on those
@@ -110,11 +122,13 @@ crates/
   cf-invariants-anchor-emit/     # Render to Crucible / Trident-stub source
   cf-invariants-anchor-report/   # Scorecard markdown + JSON renderer
 references/
-  vault_ref/                     # clean Anchor vault (conservation should hold)
-  vault_ref_planted/             # off-by-one on withdraw bookkeeping
+  vault_ref{,_planted}/          # balance_conservation pair
+  counter_ref{,_planted}/        # monotonic_accounting pair
+  admin_ref{,_planted}/          # access_control pair
 findings/
-  vault_ref_clean/               # scorecard.expected.{json,md}
-  vault_ref_planted/             # scorecard.expected.{json,md} with counterexample
+  vault_ref_{clean,planted}/     # scorecard.expected.md + CI capture
+  counter_ref_{clean,planted}/   # scorecard.expected.md + CI capture
+  admin_ref_{clean,planted}/     # scorecard.expected.md + CI capture
 docs/
   architecture.md                # design, emit-target abstraction, Crucible API record
   ai-disclosure.md               # AI involvement, disclosure path, audit log
@@ -208,9 +222,9 @@ siblings remain as authored reference for diffing.
 | Phase | Surface |
 |-------|---------|
 | **0** | IDL ingest → ranked balance-conservation candidates → Crucible emit → scorecard renderer. Heuristic suggester only. ✅ shipped. |
-| **1 (this build)** | AI-suggested invariants live (Anthropic Claude Sonnet path: MockTransport default, LiveAnthropicTransport behind `--features live-ai` + env). Monotonic + access-control classes added to the suggester + emit. ✅ in-tree. The new-classes reference contract pair + harness CI proof are queued for the next push (see `_handoff/PHASE2_PENDING.md`). |
-| 2 | New classes' `counter_ref` clean/planted pair + CI Crucible run proving each class catches its planted bug. Trident emit target. |
-| 3 | Oracle-freshness class. CI scorecard-drift early warning. Shrinking. Multi-account-state surface (full account-mutability-set analysis instead of name-heuristic). |
+| **1** | AI-suggested invariants live (Anthropic Claude Sonnet path: MockTransport default, LiveAnthropicTransport behind `--features live-ai` + env). Monotonic + access-control classes added to the suggester + emit. ✅ shipped. |
+| **2 (this build)** | `counter_ref` (monotonicity) + `admin_ref` (access control) reference pairs with CI Crucible proof — each new class catches its planted bug under `clean=0 / planted≥1`. ✅ in-tree; CI-green gated on the next push. |
+| 3 | Trident emit target. Oracle-freshness class. CI scorecard-drift early warning. Shrinking. Multi-account-state surface (full account-mutability-set analysis instead of name-heuristic). |
 
 ## Reporting issues, security contact
 

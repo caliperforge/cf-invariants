@@ -30,46 +30,67 @@ CRUCIBLE_TIMEOUT="${CRUCIBLE_TIMEOUT:-30}"
 echo "==> cf-invariants-anchor workspace tests"
 cargo test --manifest-path "$HERE/Cargo.toml" --workspace
 
-echo
-echo "==> cargo build-sbf vault_ref (clean)"
-cargo build-sbf \
-    --tools-version "$TOOLS_VERSION" \
-    --manifest-path "$HERE/references/vault_ref/programs/vault_ref/Cargo.toml"
+# Helper: build a reference program, re-emit its invariant from the IDL,
+# and run Crucible on both clean+planted variants.
+#   $1 = ref name           (vault_ref, counter_ref, admin_ref)
+#   $2 = program crate dir  (program-crate folder name)
+#   $3 = idl filename       (basename under idls/)
+#   $4 = emit candidate idx (0 for balance, 1 for monotonic/access)
+#   $5 = invariant fn name  (Crucible --invariant)
+run_pair() {
+  local ref="$1" prog="$2" idl="$3" idx="$4" inv="$5"
+
+  echo
+  echo "==> cargo build-sbf ${ref} (clean)"
+  cargo build-sbf \
+      --tools-version "$TOOLS_VERSION" \
+      --manifest-path "$HERE/references/${ref}/programs/${prog}/Cargo.toml"
+
+  echo
+  echo "==> cargo build-sbf ${ref} (planted)"
+  cargo build-sbf \
+      --tools-version "$TOOLS_VERSION" \
+      --manifest-path "$HERE/references/${ref}_planted/programs/${prog}/Cargo.toml"
+
+  echo
+  echo "==> re-emit ${inv} from IDL (sanity)"
+  cargo run --manifest-path "$HERE/Cargo.toml" \
+      --bin cf-invariants-anchor --quiet -- \
+      emit \
+      "$HERE/references/${ref}/idls/${idl}" \
+      --target crucible \
+      --candidate-index "$idx" \
+      --out "$HERE/references/${ref}/fuzz/${prog}/src/main.rs"
+  cp "$HERE/references/${ref}/fuzz/${prog}/src/main.rs" \
+     "$HERE/references/${ref}_planted/fuzz/${prog}/src/main.rs"
+
+  echo
+  echo "==> Crucible run on CLEAN ${ref} (expect 0 violations within ${CRUCIBLE_TIMEOUT}s)"
+  ( cd "$HERE/references/${ref}/fuzz/${prog}" && \
+    crucible run "${prog}" "${inv}" \
+        --release --timeout "$CRUCIBLE_TIMEOUT" )
+
+  echo
+  echo "==> Crucible run on PLANTED ${ref} (expect >=1 violation)"
+  ( cd "$HERE/references/${ref}_planted/fuzz/${prog}" && \
+    crucible run "${prog}" "${inv}" \
+        --release --timeout "$CRUCIBLE_TIMEOUT" || \
+    echo "Crucible reported a violation (expected for the planted variant)." )
+}
+
+# Pair 1 — balance_conservation
+run_pair vault_ref    vault_ref    vault_ref.json    0 invariant_amount_conservation
+# Pair 2 — monotonic_accounting
+run_pair counter_ref  counter_ref  counter_ref.json  1 invariant_lifetime_deposited_monotonic
+# Pair 3 — access_control
+run_pair admin_ref    admin_ref    admin_ref.json    1 invariant_withdraw_rejects_unauthorized
 
 echo
-echo "==> cargo build-sbf vault_ref (planted)"
-cargo build-sbf \
-    --tools-version "$TOOLS_VERSION" \
-    --manifest-path "$HERE/references/vault_ref_planted/programs/vault_ref/Cargo.toml"
-
-echo
-echo "==> re-emit invariant fixture from IDL (sanity)"
-cargo run --manifest-path "$HERE/Cargo.toml" \
-    --bin cf-invariants-anchor --quiet -- \
-    emit \
-    "$HERE/references/vault_ref/idls/vault_ref.json" \
-    --target crucible \
-    --out "$HERE/references/vault_ref/fuzz/vault_ref/src/main.rs"
-cp "$HERE/references/vault_ref/fuzz/vault_ref/src/main.rs" \
-   "$HERE/references/vault_ref_planted/fuzz/vault_ref/src/main.rs"
-
-echo
-echo "==> Crucible run on the CLEAN variant (expect: 0 violations within ${CRUCIBLE_TIMEOUT}s)"
-( cd "$HERE/references/vault_ref/fuzz/vault_ref" && \
-  crucible run vault_ref invariant_amount_conservation \
-      --release --timeout "$CRUCIBLE_TIMEOUT" )
-
-echo
-echo "==> Crucible run on the PLANTED variant (expect: >=1 violation)"
-( cd "$HERE/references/vault_ref_planted/fuzz/vault_ref" && \
-  crucible run vault_ref invariant_amount_conservation \
-      --release --timeout "$CRUCIBLE_TIMEOUT" || \
-  echo "Crucible reported a violation (expected for the planted variant)." )
-
-echo
-echo "==> Done. Compare the two runs to:"
-echo "    $HERE/findings/vault_ref_clean/scorecard.expected.md"
-echo "    $HERE/findings/vault_ref_planted/scorecard.expected.md"
+echo "==> Done. Compare the runs to:"
+for ref in vault_ref counter_ref admin_ref; do
+  echo "    $HERE/findings/${ref}_clean/scorecard.expected.md"
+  echo "    $HERE/findings/${ref}_planted/scorecard.expected.md"
+done
 echo "Real captured scorecards (from the CI run) live alongside, at"
-echo "    $HERE/findings/vault_ref_{clean,planted}/scorecard.md"
+echo "    $HERE/findings/<ref>_{clean,planted}/scorecard.md"
 echo "once CI has produced them (see .github/workflows/ci.yml)."

@@ -3,10 +3,16 @@ name: ci
 # cf-invariants-anchor end-to-end CI.
 #
 # The CI run IS the proof: zero local toolchain footprint, every push
-# rebuilds the workspace + the two reference vault programs + runs the
-# Crucible harness on both, asserting clean=0 violations and planted>=1.
-# If the matrix below stops being green, the artifact is broken — we
+# rebuilds the workspace + ALL THREE reference vault programs (and
+# their planted twins) + runs the Crucible harness on every pair,
+# asserting clean=0 violations and planted>=1 per invariant class.
+# If any matrix cell stops being green, the artifact is broken — we
 # never publish a manual "verified" claim.
+#
+# Classes currently proven in CI:
+#   - balance_conservation  — vault_ref pair, invariant_amount_conservation
+#   - monotonic_accounting  — counter_ref pair, invariant_lifetime_deposited_monotonic
+#   - access_control        — admin_ref pair, invariant_withdraw_rejects_unauthorized
 #
 # Pinned upstream surfaces (all empirically verified against their
 # upstream tags):
@@ -39,7 +45,7 @@ env:
   SOLANA_TOOLS_VERSION: v1.52
   # Iteration budget per Crucible run. Small enough to fit a free-tier
   # GitHub-hosted runner; large enough for the planted bug to fire
-  # (the minimal counterexample is 2 actions).
+  # (the minimal counterexample is 1-2 actions on all three classes).
   CRUCIBLE_TIMEOUT: '30'
 
 jobs:
@@ -66,9 +72,9 @@ jobs:
         continue-on-error: true  # informational only on first green pass
 
   harness:
-    name: build + run Crucible harness (clean + planted)
+    name: build + run Crucible harness (3 classes × clean+planted)
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -127,6 +133,10 @@ jobs:
           which crucible
           crucible --version || crucible --help | head -3
 
+      # -----------------------------------------------------------------
+      # Pair 1 — balance_conservation (vault_ref)
+      # -----------------------------------------------------------------
+
       - name: cargo build-sbf vault_ref (clean)
         run: |
           cargo build-sbf \
@@ -141,7 +151,7 @@ jobs:
             --manifest-path references/vault_ref_planted/programs/vault_ref/Cargo.toml
           ls -l references/vault_ref_planted/target/deploy/vault_ref.so
 
-      - name: Re-emit invariant fixture from checked-in IDL (sanity)
+      - name: Re-emit vault_ref invariant fixture from checked-in IDL (sanity)
         run: |
           cargo run --bin cf-invariants-anchor --quiet -- \
             emit references/vault_ref/idls/vault_ref.json \
@@ -150,90 +160,221 @@ jobs:
           cp references/vault_ref/fuzz/vault_ref/src/main.rs \
              references/vault_ref_planted/fuzz/vault_ref/src/main.rs
 
-      - name: Crucible run — CLEAN variant (expect 0 violations)
-        id: clean
+      - name: Crucible run — vault_ref CLEAN (expect 0 violations)
+        id: vault_ref_clean
         working-directory: references/vault_ref/fuzz/vault_ref
         run: |
           set -o pipefail
           mkdir -p "$GITHUB_WORKSPACE/ci-out"
           crucible run vault_ref invariant_amount_conservation \
               --release --timeout "${CRUCIBLE_TIMEOUT}" \
-              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/clean.out"
-          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/clean.out"; then
-            echo "::error::clean variant reported a violation — invariant is wrong or vault_ref has a real bug"
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/vault_ref_clean.out"
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/vault_ref_clean.out"; then
+            echo "::error::vault_ref clean reported a violation — invariant is wrong or vault_ref has a real bug"
             exit 1
           fi
 
-      - name: Crucible run — PLANTED variant (expect >=1 violation)
-        id: planted
+      - name: Crucible run — vault_ref PLANTED (expect >=1 violation)
+        id: vault_ref_planted
         working-directory: references/vault_ref_planted/fuzz/vault_ref
         run: |
           set +e
           crucible run vault_ref invariant_amount_conservation \
               --release --timeout "${CRUCIBLE_TIMEOUT}" \
-              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/planted.out"
-          # Either an exit code OR a [FUZZ_FINDING]/INVARIANT marker counts as a violation.
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/vault_ref_planted.out"
           rc=${PIPESTATUS[0]}
           set -e
-          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/planted.out"; then
-            echo "planted variant reported a violation (expected)."
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/vault_ref_planted.out"; then
+            echo "vault_ref planted reported a violation (expected)."
             exit 0
           elif [ "$rc" -ne 0 ]; then
-            echo "planted variant exited non-zero ($rc); treating as detected violation."
+            echo "vault_ref planted exited non-zero ($rc); treating as detected violation."
             exit 0
           else
-            echo "::error::planted variant ran clean — the planted bookkeeping bug was not surfaced within ${CRUCIBLE_TIMEOUT}s. Increase CRUCIBLE_TIMEOUT or inspect the harness."
+            echo "::error::vault_ref planted ran clean — the planted bookkeeping bug was not surfaced within ${CRUCIBLE_TIMEOUT}s."
             exit 1
           fi
+
+      # -----------------------------------------------------------------
+      # Pair 2 — monotonic_accounting (counter_ref)
+      # -----------------------------------------------------------------
+
+      - name: cargo build-sbf counter_ref (clean)
+        run: |
+          cargo build-sbf \
+            --tools-version "${SOLANA_TOOLS_VERSION}" \
+            --manifest-path references/counter_ref/programs/counter_ref/Cargo.toml
+          ls -l references/counter_ref/target/deploy/counter_ref.so
+
+      - name: cargo build-sbf counter_ref (planted)
+        run: |
+          cargo build-sbf \
+            --tools-version "${SOLANA_TOOLS_VERSION}" \
+            --manifest-path references/counter_ref_planted/programs/counter_ref/Cargo.toml
+          ls -l references/counter_ref_planted/target/deploy/counter_ref.so
+
+      - name: Re-emit counter_ref monotonic fixture from checked-in IDL (sanity)
+        # candidate-index 1 = monotonic_accounting on Vault.lifetime_deposited
+        # (index 0 is balance_conservation on Vault.amount, rank 0.92 vs 0.83).
+        run: |
+          cargo run --bin cf-invariants-anchor --quiet -- \
+            emit references/counter_ref/idls/counter_ref.json \
+            --target crucible \
+            --candidate-index 1 \
+            --out references/counter_ref/fuzz/counter_ref/src/main.rs
+          cp references/counter_ref/fuzz/counter_ref/src/main.rs \
+             references/counter_ref_planted/fuzz/counter_ref/src/main.rs
+
+      - name: Crucible run — counter_ref CLEAN (expect 0 violations)
+        id: counter_ref_clean
+        working-directory: references/counter_ref/fuzz/counter_ref
+        run: |
+          set -o pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ci-out"
+          crucible run counter_ref invariant_lifetime_deposited_monotonic \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/counter_ref_clean.out"
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/counter_ref_clean.out"; then
+            echo "::error::counter_ref clean reported a violation — monotonic invariant is wrong or counter_ref clean has a real ratchet bug"
+            exit 1
+          fi
+
+      - name: Crucible run — counter_ref PLANTED (expect >=1 violation)
+        id: counter_ref_planted
+        working-directory: references/counter_ref_planted/fuzz/counter_ref
+        run: |
+          set +e
+          crucible run counter_ref invariant_lifetime_deposited_monotonic \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/counter_ref_planted.out"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/counter_ref_planted.out"; then
+            echo "counter_ref planted reported a violation (expected)."
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            echo "counter_ref planted exited non-zero ($rc); treating as detected violation."
+            exit 0
+          else
+            echo "::error::counter_ref planted ran clean — the planted lifetime_deposited ratchet break was not surfaced within ${CRUCIBLE_TIMEOUT}s."
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------
+      # Pair 3 — access_control (admin_ref)
+      # -----------------------------------------------------------------
+
+      - name: cargo build-sbf admin_ref (clean)
+        run: |
+          cargo build-sbf \
+            --tools-version "${SOLANA_TOOLS_VERSION}" \
+            --manifest-path references/admin_ref/programs/admin_ref/Cargo.toml
+          ls -l references/admin_ref/target/deploy/admin_ref.so
+
+      - name: cargo build-sbf admin_ref (planted)
+        run: |
+          cargo build-sbf \
+            --tools-version "${SOLANA_TOOLS_VERSION}" \
+            --manifest-path references/admin_ref_planted/programs/admin_ref/Cargo.toml
+          ls -l references/admin_ref_planted/target/deploy/admin_ref.so
+
+      - name: Re-emit admin_ref access_control fixture from checked-in IDL (sanity)
+        # candidate-index 1 = access_control on withdraw (index 0 is
+        # balance_conservation on Vault.amount, rank 0.92 vs 0.78).
+        # The planted-twin IDL drops the seeds/PDA metadata on Withdraw
+        # to mirror the planted Anchor accounts struct, but the EMIT
+        # uses the clean IDL — the fixture probes the same call surface.
+        run: |
+          cargo run --bin cf-invariants-anchor --quiet -- \
+            emit references/admin_ref/idls/admin_ref.json \
+            --target crucible \
+            --candidate-index 1 \
+            --out references/admin_ref/fuzz/admin_ref/src/main.rs
+          cp references/admin_ref/fuzz/admin_ref/src/main.rs \
+             references/admin_ref_planted/fuzz/admin_ref/src/main.rs
+
+      - name: Crucible run — admin_ref CLEAN (expect 0 violations)
+        id: admin_ref_clean
+        working-directory: references/admin_ref/fuzz/admin_ref
+        run: |
+          set -o pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ci-out"
+          crucible run admin_ref invariant_withdraw_rejects_unauthorized \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/admin_ref_clean.out"
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/admin_ref_clean.out"; then
+            echo "::error::admin_ref clean reported a violation — has_one + seeds should reject the attacker probe"
+            exit 1
+          fi
+
+      - name: Crucible run — admin_ref PLANTED (expect >=1 violation)
+        id: admin_ref_planted
+        working-directory: references/admin_ref_planted/fuzz/admin_ref
+        run: |
+          set +e
+          crucible run admin_ref invariant_withdraw_rejects_unauthorized \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/admin_ref_planted.out"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/admin_ref_planted.out"; then
+            echo "admin_ref planted reported a violation (expected)."
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            echo "admin_ref planted exited non-zero ($rc); treating as detected violation."
+            exit 0
+          else
+            echo "::error::admin_ref planted ran clean — the missing has_one + seeds was not exploited within ${CRUCIBLE_TIMEOUT}s."
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------
+      # Aggregate scorecards from real CI output.
+      # -----------------------------------------------------------------
 
       - name: Capture scorecards from real CI output
         if: always()
         run: |
-          mkdir -p findings/vault_ref_clean findings/vault_ref_planted
-          # Toolchain banner reused by both captures.
           TC="rustc $(rustc --version | awk '{print $2}'), solana $(solana --version | awk '{print $2}'), platform-tools ${SOLANA_TOOLS_VERSION}, crucible v0.2.0 (anchor-lang 1.0.1)"
-          # Clean.
-          {
-            echo "# cf-invariants-anchor scorecard (CI capture, clean variant)"
-            echo
-            echo "Captured by \`.github/workflows/ci.yml\` on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
-            echo "Toolchain: ${TC}."
-            echo "Crucible timeout: ${CRUCIBLE_TIMEOUT}s."
-            echo
-            echo "## Summary"
-            echo
-            echo "- Invariants total: **1**"
-            echo "- Invariants violated: **0**"
-            echo "- AI-suggested invariants in this run: **0**"
-            echo "- Crucible version: \`0.2.0\`"
-            echo
-            echo "## Raw output"
-            echo
-            echo '```'
-            cat "$GITHUB_WORKSPACE/ci-out/clean.out" || echo "(no output captured)"
-            echo '```'
-          } > findings/vault_ref_clean/scorecard.md
-          # Planted.
-          {
-            echo "# cf-invariants-anchor scorecard (CI capture, planted variant)"
-            echo
-            echo "Captured by \`.github/workflows/ci.yml\` on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
-            echo "Toolchain: ${TC}."
-            echo "Crucible timeout: ${CRUCIBLE_TIMEOUT}s."
-            echo
-            echo "## Summary"
-            echo
-            echo "- Invariants total: **1**"
-            echo "- Invariants violated: **>=1** (planted bookkeeping bug)"
-            echo "- AI-suggested invariants in this run: **0**"
-            echo "- Crucible version: \`0.2.0\`"
-            echo
-            echo "## Raw output"
-            echo
-            echo '```'
-            cat "$GITHUB_WORKSPACE/ci-out/planted.out" || echo "(no output captured)"
-            echo '```'
-          } > findings/vault_ref_planted/scorecard.md
+          STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          render_scorecard() {
+            local ref="$1" variant="$2" total="$3" violated="$4" class="$5"
+            local out_dir="findings/${ref}_${variant}"
+            local raw="$GITHUB_WORKSPACE/ci-out/${ref}_${variant}.out"
+            mkdir -p "$out_dir"
+            {
+              echo "# cf-invariants-anchor scorecard (CI capture, ${ref} ${variant} variant)"
+              echo
+              echo "Captured by \`.github/workflows/ci.yml\` on ${STAMP}."
+              echo "Toolchain: ${TC}."
+              echo "Crucible timeout: ${CRUCIBLE_TIMEOUT}s."
+              echo "Invariant class: \`${class}\`."
+              echo
+              echo "## Summary"
+              echo
+              echo "- Invariants total: **${total}**"
+              echo "- Invariants violated: **${violated}**"
+              echo "- AI-suggested invariants in this run: **0**"
+              echo "- Crucible version: \`0.2.0\`"
+              echo
+              echo "## Raw output"
+              echo
+              echo '```'
+              # Strip ANSI escape codes before committing for diff-friendly captures.
+              if [ -f "$raw" ]; then
+                sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' "$raw"
+              else
+                echo "(no output captured)"
+              fi
+              echo '```'
+            } > "$out_dir/scorecard.md"
+          }
+          render_scorecard "vault_ref"   "clean"   "1" "0"     "balance_conservation"
+          render_scorecard "vault_ref"   "planted" "1" ">=1"   "balance_conservation"
+          render_scorecard "counter_ref" "clean"   "1" "0"     "monotonic_accounting"
+          render_scorecard "counter_ref" "planted" "1" ">=1"   "monotonic_accounting"
+          render_scorecard "admin_ref"   "clean"   "1" "0"     "access_control"
+          render_scorecard "admin_ref"   "planted" "1" ">=1"   "access_control"
 
       - name: Upload scorecards + raw output as artifact
         if: always()
@@ -244,3 +385,7 @@ jobs:
             ci-out/*.out
             findings/vault_ref_clean/scorecard.md
             findings/vault_ref_planted/scorecard.md
+            findings/counter_ref_clean/scorecard.md
+            findings/counter_ref_planted/scorecard.md
+            findings/admin_ref_clean/scorecard.md
+            findings/admin_ref_planted/scorecard.md
