@@ -1,0 +1,100 @@
+[
+  {
+    "name": "invariant_total_assets_conservation",
+    "summary": "LendingVault.total_assets == fixture-tracked sum of deposits − sum of withdrawals",
+    "class": "balance_conservation",
+    "rank": 0.92,
+    "rationale": "Detected balance-bearing field `LendingVault.total_assets: u64` on an account mutated by movement-class instructions (deposit, withdraw). A correct implementation keeps this field in lock-step with the net amount transferred in via these instructions; any drift is a balance-conservation violation. The fixture walks `expected_total_assets` through `action_deposit`/`action_withdraw` and asserts equality after every action.",
+    "emit_hints": {
+      "account_type": "LendingVault",
+      "field": "total_assets",
+      "expected_expression": "fixture.expected_total_assets",
+      "action_names": [
+        "deposit",
+        "withdraw"
+      ]
+    },
+    "source": {
+      "kind": "Heuristic",
+      "suggester_version": "0.2.0"
+    }
+  },
+  {
+    "name": "invariant_cumulative_yield_monotonic",
+    "summary": "LendingVault.cumulative_yield never decreases across successive observations",
+    "class": "monotonic_accounting",
+    "rank": 0.83,
+    "rationale": "Detected lifetime/cumulative-flavored field `LendingVault.cumulative_yield: u64` on an account mutated by program instructions (deposit, withdraw). Fields with this naming convention are ratchet-only — a correct implementation never decreases them. The fixture snapshots `last_seen_cumulative_yield` after `setup` and each action; any subsequent observation that violates monotonic ≥ is the bug.",
+    "emit_hints": {
+      "account_type": "LendingVault",
+      "field": "cumulative_yield",
+      "expected_expression": "fixture.last_seen_cumulative_yield",
+      "action_names": [
+        "deposit",
+        "withdraw"
+      ]
+    },
+    "source": {
+      "kind": "Heuristic",
+      "suggester_version": "0.2.0"
+    }
+  },
+  {
+    "name": "invariant_withdraw_rejects_unauthorized",
+    "summary": "withdraw rejects when invoked by anyone other than the authorized signer",
+    "class": "access_control",
+    "rank": 0.78,
+    "rationale": "Detected authority-gated instruction `withdraw` (name signals a privileged mutation). The emitted fuzz fixture probes with a freshly-generated attacker `Keypair` (never the vault depositor / authority) and asserts the call returns an error. Any success is an access-control violation — the program failed to verify the signer.",
+    "emit_hints": {
+      "account_type": "Vault",
+      "field": "depositor",
+      "expected_expression": "fixture.vault.depositor",
+      "action_names": [
+        "withdraw"
+      ]
+    },
+    "source": {
+      "kind": "Heuristic",
+      "suggester_version": "0.2.0"
+    }
+  },
+  {
+    "name": "invariant_set_admin_rejects_unauthorized",
+    "summary": "set_admin rejects when invoked by anyone other than the authorized signer",
+    "class": "access_control",
+    "rank": 0.78,
+    "rationale": "Detected authority-gated instruction `set_admin` (name signals a privileged mutation). The emitted fuzz fixture probes with a freshly-generated attacker `Keypair` (never the vault depositor / authority) and asserts the call returns an error. Any success is an access-control violation — the program failed to verify the signer.",
+    "emit_hints": {
+      "account_type": "Vault",
+      "field": "depositor",
+      "expected_expression": "fixture.vault.depositor",
+      "action_names": [
+        "set_admin"
+      ]
+    },
+    "source": {
+      "kind": "Heuristic",
+      "suggester_version": "0.2.0"
+    }
+  },
+  {
+    "name": "invariant_total_shares_conservation",
+    "summary": "LendingVault.total_shares == fixture-tracked sum of deposits − sum of withdrawals",
+    "class": "balance_conservation",
+    "rank": 0.55,
+    "rationale": "Detected balance-bearing field `LendingVault.total_shares: u64` on an account mutated by movement-class instructions (deposit, withdraw). A correct implementation keeps this field in lock-step with the net amount transferred in via these instructions; any drift is a balance-conservation violation. The fixture walks `expected_total_shares` through `action_deposit`/`action_withdraw` and asserts equality after every action.",
+    "emit_hints": {
+      "account_type": "LendingVault",
+      "field": "total_shares",
+      "expected_expression": "fixture.expected_total_shares",
+      "action_names": [
+        "deposit",
+        "withdraw"
+      ]
+    },
+    "source": {
+      "kind": "Heuristic",
+      "suggester_version": "0.2.0"
+    }
+  }
+]
