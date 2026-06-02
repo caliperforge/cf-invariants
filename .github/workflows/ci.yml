@@ -13,9 +13,13 @@ name: ci
 #   - Crucible:        v0.2.0    (asymmetric-research/crucible)
 #   - anchor-lang:     1.0.1     (matches Crucible v0.2.0 workspace)
 #   - Solana CLI:      v2.1.21   (Anza release; recent stable)
-#   - platform-tools:  v1.52     (required by Crucible v0.2.0 deps —
-#                                 earlier versions ship rustc 1.84 which
-#                                 cannot build edition2024 crates)
+#   - platform-tools:  v1.52     (recent tag with linux-x86_64 asset; the
+#                                 bundled default in Agave v2.1.21 is v1.43,
+#                                 too old for some anchor-lang 1.0.1 deps.
+#                                 NB: Agave v2.1.21 ships a buggy
+#                                 cargo-build-sbf that panics if
+#                                 ~/.cache/solana doesn't exist — we mkdir
+#                                 it explicitly before the first invocation.)
 
 on:
   push:
@@ -81,10 +85,23 @@ jobs:
           sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
+      - name: Pre-create platform-tools cache dir
+        # Workaround for a known cargo-build-sbf bug in Agave v2.1.21
+        # (sdk/cargo-build-sbf/src/main.rs:146): `find_installed_platform_tools`
+        # calls `std::fs::read_dir(~/.cache/solana).unwrap()` and panics with
+        # `Os { code: 2, kind: NotFound }` on a fresh runner where the cache
+        # dir has never been created. Creating it up-front turns the panic
+        # into an empty-cache no-op so the tool proceeds to download the
+        # pinned platform-tools tarball.
+        run: mkdir -p "$HOME/.cache/solana"
+
       - name: Verify solana / cargo-build-sbf on PATH
         run: |
           solana --version
-          cargo-build-sbf --version || true
+          # Fail loud: with the cache dir now pre-created, --version must
+          # succeed. Previously masked with `|| true`, which hid the
+          # underlying NotFound panic until the first real build.
+          cargo-build-sbf --version
 
       - name: Clone Crucible @ ${{ env.CRUCIBLE_REF }} (sibling to this repo)
         # Path deps in references/*/fuzz/*/Cargo.toml resolve to
