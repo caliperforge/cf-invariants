@@ -71,7 +71,9 @@ fn render_crucible(surface: &ContractSurface, candidate: &InvariantCandidate) ->
 
 use crucible_fuzzer::anchor_lang::system_program;
 use crucible_fuzzer::*;
-use {program_name}::*;
+// `::` prefix disambiguates the program crate from a `vault_ref`
+// module re-exported via `crucible_fuzzer::*` (rustc E0659 otherwise).
+use ::{program_name}::*;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;

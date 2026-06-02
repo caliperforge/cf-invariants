@@ -14,7 +14,9 @@
 
 use crucible_fuzzer::anchor_lang::system_program;
 use crucible_fuzzer::*;
-use vault_ref::*;
+// `::` prefix disambiguates the program crate from a `vault_ref`
+// module re-exported via `crucible_fuzzer::*` (rustc E0659 otherwise).
+use ::vault_ref::*;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
