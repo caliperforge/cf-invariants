@@ -29,8 +29,12 @@ pub mod vault_ref {
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         require!(amount > 0, VaultError::InvalidAmount);
 
+        // anchor-lang 1.0.x: CpiContext::new takes Pubkey, not AccountInfo
+        // (changed from the 0.30.x signature). The system_program's
+        // AccountInfo lives in the Accounts struct for the runtime; only
+        // the program_id flows through CpiContext now.
         let cpi_ctx = CpiContext::new(
-            ctx.accounts.system_program.to_account_info(),
+            ctx.accounts.system_program.key(),
             system_program::Transfer {
                 from: ctx.accounts.depositor.to_account_info(),
                 to: ctx.accounts.vault.to_account_info(),
