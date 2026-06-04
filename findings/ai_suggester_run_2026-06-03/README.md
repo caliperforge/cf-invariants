@@ -11,7 +11,7 @@ documented in `cf-invariants-anchor-ai/src/lib.rs`.
 
 **What this is NOT.** This is an **assistive, human-reviewed**
 suggester. The model proposed candidate invariants based on the parsed
-contract surface; an operator (this run: rust_anchor_specialist on
+contract surface; an operator (this run: Michael Moffett, operator,
 2026-06-03) reviewed them; the Crucible harness is the *checker* that
 either holds them clean on the reference build or fires them on a
 planted twin. **The AI did not "find a bug." It proposed candidates a
@@ -77,11 +77,11 @@ misrepresentation.
 
 `cf-invariants-anchor-ai::LiveAnthropicTransport` requires both
 `ANTHROPIC_API_KEY` and `CF_INVARIANTS_ANCHOR_AI_LIVE=1` at run time.
-Neither was present in the rust_anchor_specialist's run environment
-on 2026-06-03. To capture a real model call without faking it, this
-run used the locally-available `claude` CLI (`claude -p`, OAuth-
-authenticated, model `sonnet` → resolved to `claude-sonnet-4-6` per
-the modelUsage block in `transport_envelope.json`) as the transport.
+Neither was present in the operator run environment on 2026-06-03.
+To capture a real model call without faking it, this run used the
+locally-available `claude` CLI (`claude -p`, OAuth-authenticated,
+model `sonnet` → resolved to `claude-sonnet-4-6` per the modelUsage
+block in `transport_envelope.json`) as the transport.
 
 The bytes the model saw — `prompt.txt` — are *bit-identical* to what
 `AnthropicClient::render_prompt` would have written to the wire. The

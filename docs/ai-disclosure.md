@@ -86,12 +86,10 @@ disclosed, audit-logged runtime feature.
 
 ## How to disable AI involvement entirely
 
-- **Default build**: heuristic suggester only. No outbound calls, no
-  API keys required. The `--ai` flag is rejected at config time if
-  the binary was built without `--features live-ai` AND
-  `CF_INVARIANTS_ANCHOR_AI_LIVE=1` — well, more precisely, with the
-  live feature off the mock transport is used; users that want
-  guaranteed-no-AI-tag output simply omit the `--ai` flag.
+- **Default build**: heuristic suggester only. The `--ai` flag is
+  unreachable unless the binary is built with `--features live-ai`
+  AND `CF_INVARIANTS_ANCHOR_AI_LIVE=1`; otherwise the suggester
+  returns `Heuristic`-tagged candidates with no API call.
 - **Live AI off, mock disclosure-tagged candidates off**: omit
   `--ai`. Default `suggest` returns `Heuristic`-tagged candidates
   only.
