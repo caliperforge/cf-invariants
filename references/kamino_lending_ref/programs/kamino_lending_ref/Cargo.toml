@@ -1,0 +1,24 @@
+[package]
+name = "kamino_lending_ref"
+version = "0.1.0"
+edition = "2021"
+description = "cf-invariants-anchor Kamino-class reference: share-based lending vault, modeled on Kamino kvault structural shape (Apache-2.0, clean-room — see findings/kamino_buildtowin_2026-06-02/)."
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "kamino_lending_ref"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+test-sbf = []
+
+[dependencies]
+# Pinned to upstream Crucible v0.2.0 workspace
+# (https://github.com/asymmetric-research/crucible/blob/v0.2.0/Cargo.toml).
+anchor-lang = "1.0.1"

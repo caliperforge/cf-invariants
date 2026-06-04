@@ -329,6 +329,81 @@ jobs:
           fi
 
       # -----------------------------------------------------------------
+      # Pair 4 — Kamino-class lending vault (balance_conservation)
+      #
+      # Faithful Kamino kvault-shape reference (share-based accounting,
+      # interest accrual, admin-gated config). Planted bug: withdraw
+      # debits `total_assets` by `underlying + 1` even though only
+      # `underlying` lamports actually leave the vault. Models the
+      # share-price-drift class of bug called out as the highest-value
+      # attack surface in `agents/bounty_hunter/programs/kamino/dossier.md`
+      # ("collateral / share-accounting drift on Critical tier"). The
+      # full Kamino-build-to-win artifact lives at
+      # `agents/audit_engineer/findings/kamino_buildtowin_2026-06-02/`.
+      # -----------------------------------------------------------------
+
+      - name: cargo build-sbf kamino_lending_ref (clean)
+        run: |
+          cargo build-sbf \
+            --tools-version "${SOLANA_TOOLS_VERSION}" \
+            --manifest-path references/kamino_lending_ref/programs/kamino_lending_ref/Cargo.toml
+          ls -l references/kamino_lending_ref/target/deploy/kamino_lending_ref.so
+
+      - name: cargo build-sbf kamino_lending_ref (planted)
+        run: |
+          cargo build-sbf \
+            --tools-version "${SOLANA_TOOLS_VERSION}" \
+            --manifest-path references/kamino_lending_ref_planted/programs/kamino_lending_ref/Cargo.toml
+          ls -l references/kamino_lending_ref_planted/target/deploy/kamino_lending_ref.so
+
+      - name: Re-emit kamino_lending_ref balance_conservation fixture from checked-in IDL (sanity)
+        # candidate-index 0 = balance_conservation on LendingVault.total_assets
+        # (rank 0.92 — top candidate among the 5 the suggester returns).
+        run: |
+          cargo run --bin cf-invariants-anchor --quiet -- \
+            emit references/kamino_lending_ref/idls/kamino_lending_ref.json \
+            --target crucible \
+            --candidate-index 0 \
+            --out references/kamino_lending_ref/fuzz/kamino_lending_ref/src/main.rs
+          cp references/kamino_lending_ref/fuzz/kamino_lending_ref/src/main.rs \
+             references/kamino_lending_ref_planted/fuzz/kamino_lending_ref/src/main.rs
+
+      - name: Crucible run — kamino_lending_ref CLEAN (expect 0 violations)
+        id: kamino_lending_ref_clean
+        working-directory: references/kamino_lending_ref/fuzz/kamino_lending_ref
+        run: |
+          set -o pipefail
+          mkdir -p "$GITHUB_WORKSPACE/ci-out"
+          crucible run kamino_lending_ref invariant_total_assets_conservation \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/kamino_lending_ref_clean.out"
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/kamino_lending_ref_clean.out"; then
+            echo "::error::kamino_lending_ref clean reported a violation — invariant is wrong or the reference has a real bug"
+            exit 1
+          fi
+
+      - name: Crucible run — kamino_lending_ref PLANTED (expect >=1 violation)
+        id: kamino_lending_ref_planted
+        working-directory: references/kamino_lending_ref_planted/fuzz/kamino_lending_ref
+        run: |
+          set +e
+          crucible run kamino_lending_ref invariant_total_assets_conservation \
+              --release --timeout "${CRUCIBLE_TIMEOUT}" \
+              2>&1 | tee "$GITHUB_WORKSPACE/ci-out/kamino_lending_ref_planted.out"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if grep -q -E 'FUZZ_FINDING|INVARIANT VIOLATED' "$GITHUB_WORKSPACE/ci-out/kamino_lending_ref_planted.out"; then
+            echo "kamino_lending_ref planted reported a violation (expected)."
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            echo "kamino_lending_ref planted exited non-zero ($rc); treating as detected violation."
+            exit 0
+          else
+            echo "::error::kamino_lending_ref planted ran clean — the share-price-drift bookkeeping bug was not surfaced within ${CRUCIBLE_TIMEOUT}s."
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------
       # Aggregate scorecards from real CI output.
       # -----------------------------------------------------------------
 
@@ -375,6 +450,8 @@ jobs:
           render_scorecard "counter_ref" "planted" "1" ">=1"   "monotonic_accounting"
           render_scorecard "admin_ref"   "clean"   "1" "0"     "access_control"
           render_scorecard "admin_ref"   "planted" "1" ">=1"   "access_control"
+          render_scorecard "kamino_lending_ref" "clean"   "1" "0"     "balance_conservation"
+          render_scorecard "kamino_lending_ref" "planted" "1" ">=1"   "balance_conservation"
 
       - name: Upload scorecards + raw output as artifact
         if: always()
@@ -389,3 +466,5 @@ jobs:
             findings/counter_ref_planted/scorecard.md
             findings/admin_ref_clean/scorecard.md
             findings/admin_ref_planted/scorecard.md
+            findings/kamino_lending_ref_clean/scorecard.md
+            findings/kamino_lending_ref_planted/scorecard.md

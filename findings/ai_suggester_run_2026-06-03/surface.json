@@ -1,0 +1,43 @@
+{
+  "program_id": "Va111tRef1111111111111111111111111111111111",
+  "program_name": "vault_ref",
+  "instructions": [
+    {
+      "name": "initialize",
+      "args": [],
+      "accounts": [
+        "vault",
+        "depositor",
+        "system_program"
+      ]
+    },
+    {
+      "name": "deposit",
+      "args": [
+        "amount"
+      ],
+      "accounts": [
+        "vault",
+        "depositor",
+        "system_program"
+      ]
+    },
+    {
+      "name": "withdraw",
+      "args": [
+        "amount"
+      ],
+      "accounts": [
+        "vault",
+        "depositor"
+      ]
+    }
+  ],
+  "balance_fields": [
+    {
+      "account": "Vault",
+      "field": "amount",
+      "ty": "u64"
+    }
+  ]
+}

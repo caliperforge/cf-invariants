@@ -243,5 +243,3 @@ Apache-2.0. See `LICENSE`.
 cf-invariants-anchor is operated by Michael Moffett under the CaliperForge banner. CaliperForge is a sole-operator engineering studio.
 
 Built with AI assistance. Authored and reviewed by Michael Moffett, operator at CaliperForge. Full policy at [caliperforge.com/ai-disclosure](https://caliperforge.com/ai-disclosure). See [`docs/ai-disclosure.md`](./docs/ai-disclosure.md) for the in-repo detail on what the AI module does, the audit-log path, and how to disable it.
-
-Contact: michael@caliperforge.com (founder), team@caliperforge.com (org).

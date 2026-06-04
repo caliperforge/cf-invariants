@@ -1,0 +1,22 @@
+[package]
+name = "kamino_lending_ref"
+version = "0.1.0"
+edition = "2021"
+description = "cf-invariants-anchor Kamino-class reference, PLANTED twin — withdraw rounding bug; balance_conservation invariant fires."
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "kamino_lending_ref"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+test-sbf = []
+
+[dependencies]
+anchor-lang = "1.0.1"

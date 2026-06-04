@@ -1,0 +1,108 @@
+{
+  "address": "Km111tRef1111111111111111111111111111111111",
+  "metadata": {
+    "name": "kamino_lending_ref",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Faithful Kamino-class lending vault reference (single-depositor harness shape). cf-invariants-anchor Phase-3 Kamino build-to-win artifact."
+  },
+  "instructions": [
+    {
+      "name": "initialize",
+      "discriminator": [175, 175, 109, 31, 13, 152, 155, 237],
+      "accounts": [
+        { "name": "vault", "writable": true, "pda": { "seeds": [
+          { "kind": "const", "value": [118, 97, 117, 108, 116] },
+          { "kind": "account", "path": "depositor" }
+        ] } },
+        { "name": "depositor", "writable": true, "signer": true },
+        { "name": "system_program", "address": "11111111111111111111111111111111" }
+      ],
+      "args": []
+    },
+    {
+      "name": "deposit",
+      "discriminator": [242, 35, 198, 137, 82, 225, 242, 182],
+      "accounts": [
+        { "name": "vault", "writable": true, "pda": { "seeds": [
+          { "kind": "const", "value": [118, 97, 117, 108, 116] },
+          { "kind": "account", "path": "depositor" }
+        ] } },
+        { "name": "depositor", "writable": true, "signer": true },
+        { "name": "system_program", "address": "11111111111111111111111111111111" }
+      ],
+      "args": [
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "discriminator": [183, 18, 70, 156, 148, 109, 161, 34],
+      "accounts": [
+        { "name": "vault", "writable": true, "pda": { "seeds": [
+          { "kind": "const", "value": [118, 97, 117, 108, 116] },
+          { "kind": "account", "path": "depositor" }
+        ] } },
+        { "name": "depositor", "writable": true, "signer": true }
+      ],
+      "args": [
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "accrue_interest",
+      "discriminator": [88, 88, 88, 88, 88, 88, 88, 88],
+      "accounts": [
+        { "name": "vault", "writable": true, "pda": { "seeds": [
+          { "kind": "const", "value": [118, 97, 117, 108, 116] },
+          { "kind": "account", "path": "depositor" }
+        ] } },
+        { "name": "depositor", "signer": true }
+      ],
+      "args": [
+        { "name": "interest", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_admin",
+      "discriminator": [77, 77, 77, 77, 77, 77, 77, 77],
+      "accounts": [
+        { "name": "vault", "writable": true, "pda": { "seeds": [
+          { "kind": "const", "value": [118, 97, 117, 108, 116] },
+          { "kind": "account", "path": "depositor" }
+        ] } },
+        { "name": "depositor" },
+        { "name": "admin", "signer": true }
+      ],
+      "args": [
+        { "name": "new_admin", "type": "pubkey" }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "LendingVault",
+      "discriminator": [211, 8, 232, 43, 2, 152, 117, 119]
+    }
+  ],
+  "errors": [
+    { "code": 6000, "name": "InvalidAmount", "msg": "InvalidAmount" },
+    { "code": 6001, "name": "Overflow", "msg": "Overflow" },
+    { "code": 6002, "name": "Underflow", "msg": "Underflow" }
+  ],
+  "types": [
+    {
+      "name": "LendingVault",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "depositor", "type": "pubkey" },
+          { "name": "admin", "type": "pubkey" },
+          { "name": "total_assets", "type": "u64" },
+          { "name": "total_shares", "type": "u64" },
+          { "name": "cumulative_yield", "type": "u64" }
+        ]
+      }
+    }
+  ]
+}

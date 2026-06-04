@@ -47,11 +47,12 @@ is green on `main` across **all three** classes.
 Each class is marked **VALIDATED** once the CI run URL on `main`
 is green for the corresponding pair:
 
-| Class                  | Pair         | Clean step                 | Planted step               | Status      |
-|------------------------|--------------|----------------------------|----------------------------|-------------|
-| balance_conservation   | vault_ref    | `vault_ref_clean`          | `vault_ref_planted`        | already green (9eb3e88) |
-| monotonic_accounting   | counter_ref  | `counter_ref_clean`        | `counter_ref_planted`      | PENDING first green CI  |
-| access_control         | admin_ref    | `admin_ref_clean`          | `admin_ref_planted`        | PENDING first green CI  |
+| Class                  | Pair                  | Clean step                          | Planted step                         | Status      |
+|------------------------|-----------------------|-------------------------------------|--------------------------------------|-------------|
+| balance_conservation   | vault_ref             | `vault_ref_clean`                   | `vault_ref_planted`                  | already green (9eb3e88) |
+| monotonic_accounting   | counter_ref           | `counter_ref_clean`                 | `counter_ref_planted`                | PENDING first green CI  |
+| access_control         | admin_ref             | `admin_ref_clean`                   | `admin_ref_planted`                  | PENDING first green CI  |
+| balance_conservation (Kamino-class) | kamino_lending_ref | `kamino_lending_ref_clean` | `kamino_lending_ref_planted` | PENDING first green CI (Phase-3 dispatch 2026-06-02) |
 
 This file is overwritten with the run URLs + scorecard counts once CI
 is green across all three classes; until then, the artifact is NOT

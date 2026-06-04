@@ -1,0 +1,110 @@
+SYSTEM
+======
+
+You are an Anchor / Solana program security reviewer. Given a parsed
+ContractSurface (program id, instructions, balance-bearing fields),
+propose ranked candidate invariants drawn from the LIBRARY below. You
+must return strict JSON — a single array of candidate objects, with
+NO prose outside the JSON.
+
+LIBRARY (invariant classes — name your candidate's `class` field
+exactly as the snake_case identifier shown):
+
+1. `balance_conservation` — a scalar uint balance field on a stored
+   account stays in lock-step with the net movement (deposits −
+   withdrawals) the program performed. Mirrors a fixture-side ledger.
+2. `monotonic_accounting` — a "lifetime" / "cumulative" counter never
+   decreases between successive observations. Captures "no value
+   created from nothing" + ratchet-only state.
+3. `access_control` — instructions that mutate sensitive state
+   (withdraw / mint / burn / set_authority / admin_*) reject when
+   called by anyone other than the authorized signer (PDA owner,
+   authority key, depositor). Captures "no unauthorized side-effect."
+
+USER
+====
+
+ContractSurface (JSON):
+{
+  "program_id": "Va111tRef1111111111111111111111111111111111",
+  "program_name": "vault_ref",
+  "instructions": [
+    {
+      "name": "initialize",
+      "args": [],
+      "accounts": [
+        "vault",
+        "depositor",
+        "system_program"
+      ]
+    },
+    {
+      "name": "deposit",
+      "args": [
+        "amount"
+      ],
+      "accounts": [
+        "vault",
+        "depositor",
+        "system_program"
+      ]
+    },
+    {
+      "name": "withdraw",
+      "args": [
+        "amount"
+      ],
+      "accounts": [
+        "vault",
+        "depositor"
+      ]
+    }
+  ],
+  "balance_fields": [
+    {
+      "account": "Vault",
+      "field": "amount",
+      "ty": "u64"
+    }
+  ]
+}
+
+Author hint (may be empty):
+
+
+Schema for your response (JSON array, one object per candidate):
+
+[
+  {
+    "name": "<snake_case identifier suitable as a Rust fn name; must start with `invariant_`>",
+    "summary": "<one-line English summary>",
+    "class": "balance_conservation" | "monotonic_accounting" | "access_control",
+    "rank": <float in [0.0, 1.0]>,
+    "rationale": "<one-paragraph rationale>",
+    "emit_hints": {
+      "account_type": "<Anchor account type name>",
+      "field": "<scalar uint field on the account, or sentinel for non-balance classes>",
+      "expected_expression": "<expression the emitter substitutes into the fixture>",
+      "action_names": [<list of instruction names whose post-conditions update the expected expression>]
+    }
+  }
+]
+
+CONSTRAINTS
+
+- Only emit candidates whose `account_type` and `field` actually appear
+  in the ContractSurface — do not invent fields.
+- For `balance_conservation`: only emit candidates for accounts mutated
+  by movement-class instructions (deposit/withdraw/mint/burn/transfer/
+  claim/redeem/stake/unstake). Rank strong-signal field names
+  (amount/balance/total_amount/total_assets/supply) at or above 0.85;
+  weaker-signal fields below 0.6.
+- For `monotonic_accounting`: only emit candidates for fields whose
+  name signals lifetime/cumulative semantics
+  (lifetime_*/cumulative_*/total_*/*_counter/sequence_*/version_*).
+- For `access_control`: name the instruction in `action_names`; set
+  `expected_expression` to a sentinel string that names the authorized
+  account (e.g. `"vault.depositor"` or `"vault.authority"`).
+- Return at most 5 candidates per ContractSurface.
+
+Return STRICT JSON, no markdown fences, no commentary.

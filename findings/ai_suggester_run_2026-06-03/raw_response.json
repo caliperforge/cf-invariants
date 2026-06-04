@@ -1,0 +1,41 @@
+[
+  {
+    "name": "invariant_vault_amount_conservation",
+    "summary": "Vault.amount stays equal to cumulative deposits minus cumulative withdrawals across all deposit and withdraw calls.",
+    "class": "balance_conservation",
+    "rank": 0.93,
+    "rationale": "The ContractSurface exposes a single balance-bearing field, Vault.amount (u64), and exactly two movement-class instructions: deposit (adds `amount`) and withdraw (subtracts `amount`). The field name `amount` is a strong-signal name per the ranking rules. A fixture that tracks a running expected ledger (start + Σdeposits − Σwithdrawals) and compares it to the on-chain Vault.amount after every instruction provides tight conservation coverage with no ambiguity about which field to track.",
+    "emit_hints": {
+      "account_type": "Vault",
+      "field": "amount",
+      "expected_expression": "initial_amount + sum(deposit.amount) - sum(withdraw.amount)",
+      "action_names": ["deposit", "withdraw"]
+    }
+  },
+  {
+    "name": "invariant_withdraw_depositor_only",
+    "summary": "withdraw rejects any signer that is not the vault's recorded depositor.",
+    "class": "access_control",
+    "rank": 0.91,
+    "rationale": "withdraw is the sole value-extracting instruction and its accounts list includes `depositor`, which in a single-owner vault pattern is the authority key stored at initialization. Any caller other than vault.depositor draining the vault represents the canonical unauthorized-withdrawal vulnerability. This invariant probes that boundary directly by sending a withdraw transaction signed by an attacker key and asserting the transaction fails with an access-control error.",
+    "emit_hints": {
+      "account_type": "Vault",
+      "field": "amount",
+      "expected_expression": "vault.depositor",
+      "action_names": ["withdraw"]
+    }
+  },
+  {
+    "name": "invariant_deposit_depositor_signer",
+    "summary": "deposit rejects callers who are not the vault's authorized depositor signer.",
+    "class": "access_control",
+    "rank": 0.62,
+    "rationale": "The deposit instruction surfaces `depositor` in its accounts alongside `vault`, suggesting the program binds the depositor key at initialize time. If the program enforces that only the recorded depositor may push funds in (preventing griefing or front-running with manipulated amounts), this invariant captures that gate. Ranked below the withdraw variant because many vault designs intentionally allow open deposits; the signal is present but weaker than for withdrawal.",
+    "emit_hints": {
+      "account_type": "Vault",
+      "field": "amount",
+      "expected_expression": "vault.depositor",
+      "action_names": ["deposit"]
+    }
+  }
+]

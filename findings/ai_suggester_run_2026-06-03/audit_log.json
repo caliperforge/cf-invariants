@@ -1,0 +1,11 @@
+{
+  "timestamp_utc": "2026-06-03T20:09:51Z",
+  "model": "claude-sonnet-4-6",
+  "prompt_version": "invariant_suggestion_v1",
+  "program_name": "vault_ref",
+  "tokens_input": 6923,
+  "tokens_output": 1687,
+  "cost_usd": 0.046074,
+  "response_hash": "d94697c2ffc0b5572fe23696ffa8f80b2850c4fe5d577ab07d3716ce528692a7",
+  "candidates_returned": 3
+}
