@@ -1,5 +1,18 @@
 // cf-invariants-anchor-ai — Anthropic-backed invariant suggester.
 //
+// NOT shared with `cf-invariants-ai` (the Cairo sibling) on purpose:
+// the two crates live in independent OSS repos / workspaces, so a shared
+// `*-ai-core` crate would require either crates.io publication (premature
+// pre-1.0) or a cross-repo git dependency (fragile). The ~280 LOC of
+// genuinely-overlapping utility code (embedded SHA-256, Gregorian-date
+// conversion, transport trait, JSON-fence stripper) is intentionally
+// duplicated to keep both repos buildable in isolation. The output types
+// also diverge — anchor returns `Vec<InvariantCandidate>` with Anchor IDL
+// emit-hints; cairo returns `Vec<Invariant>` with Cairo source predicates —
+// so the orchestrator (`AnthropicClient::suggest_invariants`) cannot be
+// shared without generic-trait scaffolding that costs more than the
+// duplication it would remove.
+//
 // This crate is the Anchor sibling of `cf-invariants-ai` (the Cairo
 // path). It mirrors that crate's design contract one-for-one so an
 // operator using both has a single mental model:
