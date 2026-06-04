@@ -19,6 +19,14 @@
 //   - access_control        -> render_crucible_access_control
 // A class string the renderer doesn't recognize falls through to a
 // placeholder so a typo in the suggester is loud, not silent.
+//
+// Shared scaffolding (the header comment, the use-block + INITIAL_BALANCE
+// constant, and the setup-body intro) lives in the small `render_*` helpers
+// below. The 3 class-specific renderers compose those helpers and inline
+// only the bits that genuinely differ (fixture struct fields, action arms,
+// and the #[invariant_test] body). Output is byte-identical to the
+// pre-2026-06-04 emitter — the kamino-class-lending examples regenerate
+// unchanged.
 
 use cf_invariants_anchor_core::{ContractSurface, InvariantCandidate, InvariantSource};
 
@@ -55,26 +63,19 @@ fn render_crucible(surface: &ContractSurface, candidate: &InvariantCandidate) ->
 }
 
 // ---------------------------------------------------------------------------
-// balance_conservation (original Phase 0 shape; preserved verbatim).
+// Shared scaffolding helpers — used by all 3 class renderers.
 // ---------------------------------------------------------------------------
 
-fn render_crucible_balance(surface: &ContractSurface, candidate: &InvariantCandidate) -> String {
-    let h = &candidate.emit_hints;
-    let program_name = &surface.program_name;
-    let fixture_name = format!(
-        "{}Fixture",
-        capitalize(&surface.program_name.replace(['_', '-'], ""))
-    );
-    let invariant_fn = &candidate.name;
-    let account_ty = &h.account_type;
-    let field = &h.field;
-    let expected_field = format!("expected_{}", field);
-    let disclosure = disclosure_header(&candidate.source);
-    let class = &candidate.class;
-    let summary = &candidate.summary;
-
-    let mut s = String::new();
-    s.push_str(&format!(
+/// Leading `// …` comment block shared by every emitted fixture. Ends at
+/// the last `\n` of `fixture_doc`; caller adds the blank-line separator.
+fn render_header_comment_block(
+    invariant_fn: &str,
+    class: &str,
+    disclosure: &str,
+    summary: &str,
+    fixture_doc: &str,
+) -> String {
+    format!(
 "// {invariant_fn}
 //
 // Emitted by cf-invariants-anchor v0.2.0 for the {class} class.
@@ -83,39 +84,38 @@ fn render_crucible_balance(surface: &ContractSurface, candidate: &InvariantCandi
 //
 // {summary}
 //
-// Fixture-side bookkeeping field: `{expected_field}: u128` — walked
-// through every action and asserted against `{account_ty}.{field}`
-// after each step.
+{fixture_doc}"
+    )
+}
 
-#![allow(unused_imports)]
+/// `#![allow(…)]` + `use …` + `INITIAL_BALANCE` block shared by every
+/// emitted fixture. `disambig_comment` (if non-empty, must end in `\n`)
+/// is injected between `use crucible_fuzzer::*;` and the program-crate
+/// `use ::…::*;` — only balance currently passes one, preserving the
+/// pre-2026-06-04 byte-identical output for the existing examples.
+fn render_imports_and_const(program_name: &str, disambig_comment: &str) -> String {
+    format!(
+"#![allow(unused_imports)]
 
 use crucible_fuzzer::anchor_lang::system_program;
 use crucible_fuzzer::*;
-// `::` prefix disambiguates the program crate from a `vault_ref`
-// module re-exported via `crucible_fuzzer::*` (rustc E0659 otherwise).
-use ::{program_name}::*;
+{disambig_comment}use ::{program_name}::*;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use std::rc::Rc;
 
-const INITIAL_BALANCE: u64 = 10_000_000_000;
+const INITIAL_BALANCE: u64 = 10_000_000_000;"
+    )
+}
 
-#[derive(Clone)]
-struct {fixture_name} {{
-    ctx: TestContext,
-    program_id: Pubkey,
-    depositor: Rc<Keypair>,
-    vault_pda: Pubkey,
-    /// Fixture-side ledger. Walked through every action; asserted
-    /// against on-chain `{account_ty}.{field}` after each step.
-    {expected_field}: u128,
-}}
-
-#[fuzz_fixture]
-impl {fixture_name} {{
-    pub fn setup() -> Self {{
-        let mut ctx = TestContext::new();
+/// Shared `setup()` body: ctx construction, depositor `Keypair`, PDA
+/// derivation, `Initialize` call. Used by balance + monotonic; access
+/// control inlines its own to keep the seed-deposit comment anchored
+/// before `Initialize`. 8-space indented, ends at `.unwrap();`.
+fn render_setup_init_body(program_name: &str) -> String {
+    format!(
+"        let mut ctx = TestContext::new();
         let program_id = Pubkey::new_from_array(ID.to_bytes());
         ctx.add_program(&program_id, \"../../target/deploy/{program_name}.so\")
             .unwrap();
@@ -142,7 +142,71 @@ impl {fixture_name} {{
             }})
             .signers(&[&*depositor])
             .send()
-            .unwrap();
+            .unwrap();"
+    )
+}
+
+// ---------------------------------------------------------------------------
+// balance_conservation.
+// ---------------------------------------------------------------------------
+
+fn render_crucible_balance(surface: &ContractSurface, candidate: &InvariantCandidate) -> String {
+    let h = &candidate.emit_hints;
+    let program_name = &surface.program_name;
+    let fixture_name = format!(
+        "{}Fixture",
+        capitalize(&surface.program_name.replace(['_', '-'], ""))
+    );
+    let invariant_fn = &candidate.name;
+    let account_ty = &h.account_type;
+    let field = &h.field;
+    let expected_field = format!("expected_{}", field);
+    let disclosure = disclosure_header(&candidate.source);
+    let class = &candidate.class;
+    let summary = &candidate.summary;
+
+    let header = render_header_comment_block(
+        invariant_fn,
+        class,
+        &disclosure,
+        summary,
+        &format!(
+"// Fixture-side bookkeeping field: `{expected_field}: u128` — walked
+// through every action and asserted against `{account_ty}.{field}`
+// after each step."
+        ),
+    );
+    // Balance keeps the disambiguation comment that was historically only
+    // present in this renderer — preserves byte-identical output for the
+    // pre-2026-06-04 emitted examples.
+    let imports = render_imports_and_const(
+        program_name,
+        "// `::` prefix disambiguates the program crate from a `vault_ref`
+// module re-exported via `crucible_fuzzer::*` (rustc E0659 otherwise).
+",
+    );
+    let init_body = render_setup_init_body(program_name);
+
+    format!(
+"{header}
+
+{imports}
+
+#[derive(Clone)]
+struct {fixture_name} {{
+    ctx: TestContext,
+    program_id: Pubkey,
+    depositor: Rc<Keypair>,
+    vault_pda: Pubkey,
+    /// Fixture-side ledger. Walked through every action; asserted
+    /// against on-chain `{account_ty}.{field}` after each step.
+    {expected_field}: u128,
+}}
+
+#[fuzz_fixture]
+impl {fixture_name} {{
+    pub fn setup() -> Self {{
+{init_body}
 
         Self {{
             ctx,
@@ -212,8 +276,8 @@ fn {invariant_fn}(fixture: &mut {fixture_name}) {{
         fixture.{expected_field}
     );
 }}
-"));
-    s
+"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -235,30 +299,24 @@ fn render_crucible_monotonic(surface: &ContractSurface, candidate: &InvariantCan
     let class = &candidate.class;
     let summary = &candidate.summary;
 
-    format!(
-"// {invariant_fn}
-//
-// Emitted by cf-invariants-anchor v0.2.0 for the {class} class.
-// Target: Crucible v0.2.0 (asymmetric-research/crucible).
-// {disclosure}
-//
-// {summary}
-//
-// Fixture-side snapshot field: `{snap_field}: u128` — refreshed on
+    let header = render_header_comment_block(
+        invariant_fn,
+        class,
+        &disclosure,
+        summary,
+        &format!(
+"// Fixture-side snapshot field: `{snap_field}: u128` — refreshed on
 // every action AFTER the invariant check; the invariant asserts the
-// current on-chain value is >= the previously-snapshotted value.
+// current on-chain value is >= the previously-snapshotted value."
+        ),
+    );
+    let imports = render_imports_and_const(program_name, "");
+    let init_body = render_setup_init_body(program_name);
 
-#![allow(unused_imports)]
+    format!(
+"{header}
 
-use crucible_fuzzer::anchor_lang::system_program;
-use crucible_fuzzer::*;
-use ::{program_name}::*;
-use solana_keypair::Keypair;
-use solana_pubkey::Pubkey;
-use solana_signer::Signer;
-use std::rc::Rc;
-
-const INITIAL_BALANCE: u64 = 10_000_000_000;
+{imports}
 
 #[derive(Clone)]
 struct {fixture_name} {{
@@ -275,34 +333,7 @@ struct {fixture_name} {{
 #[fuzz_fixture]
 impl {fixture_name} {{
     pub fn setup() -> Self {{
-        let mut ctx = TestContext::new();
-        let program_id = Pubkey::new_from_array(ID.to_bytes());
-        ctx.add_program(&program_id, \"../../target/deploy/{program_name}.so\")
-            .unwrap();
-
-        let depositor = Rc::new(Keypair::new());
-        ctx.create_account()
-            .pubkey(depositor.pubkey())
-            .lamports(INITIAL_BALANCE)
-            .owner(system_program::ID)
-            .create()
-            .unwrap();
-
-        let (vault_pda, _) = Pubkey::find_program_address(
-            &[b\"vault\", depositor.pubkey().as_ref()],
-            &program_id,
-        );
-
-        ctx.program(program_id)
-            .call(instruction::Initialize {{}})
-            .accounts(accounts::Initialize {{
-                vault: vault_pda,
-                depositor: depositor.pubkey(),
-                system_program: system_program::ID,
-            }})
-            .signers(&[&*depositor])
-            .send()
-            .unwrap();
+{init_body}
 
         Self {{
             ctx,
@@ -366,7 +397,8 @@ fn {invariant_fn}(fixture: &mut {fixture_name}) {{
     // Ratchet the snapshot forward.
     fixture.{snap_field} = current;
 }}
-")
+"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -396,32 +428,30 @@ fn render_crucible_access_control(
     let class = &candidate.class;
     let summary = &candidate.summary;
 
-    format!(
-"// {invariant_fn}
-//
-// Emitted by cf-invariants-anchor v0.2.0 for the {class} class.
-// Target: Crucible v0.2.0 (asymmetric-research/crucible).
-// {disclosure}
-//
-// {summary}
-//
-// The fixture pre-deposits a small amount on behalf of the real
+    let header = render_header_comment_block(
+        invariant_fn,
+        class,
+        &disclosure,
+        summary,
+"// The fixture pre-deposits a small amount on behalf of the real
 // `depositor`, then in every `action_attack_*` arm probes the
 // privileged instruction with a freshly-minted attacker `Keypair`
 // signing instead of the depositor. The invariant fails iff the
-// program returned success on any attacker call.
+// program returned success on any attacker call.",
+    );
+    let imports = render_imports_and_const(program_name, "");
+    // NB: access_control's setup body is inlined (not reusing
+    // render_setup_init_body) because the "Initialize + small deposit"
+    // explanatory comment sits between the PDA derivation and the
+    // Initialize call — the helper places Initialize last, so reusing
+    // it would shift the comment off its anchor by one block. Keep the
+    // 25-line duplication here; preserving byte-identical emitted output
+    // is worth more than the cut.
 
-#![allow(unused_imports)]
+    format!(
+"{header}
 
-use crucible_fuzzer::anchor_lang::system_program;
-use crucible_fuzzer::*;
-use ::{program_name}::*;
-use solana_keypair::Keypair;
-use solana_pubkey::Pubkey;
-use solana_signer::Signer;
-use std::rc::Rc;
-
-const INITIAL_BALANCE: u64 = 10_000_000_000;
+{imports}
 
 #[derive(Clone)]
 struct {fixture_name} {{
@@ -538,7 +568,8 @@ fn {invariant_fn}(fixture: &mut {fixture_name}) {{
         fixture.vault_pda
     );
 }}
-")
+"
+    )
 }
 
 // ---------------------------------------------------------------------------

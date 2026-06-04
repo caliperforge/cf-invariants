@@ -55,21 +55,16 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . -> target
+      - uses: ./.github/actions/setup-rust
 
       - name: cargo test --workspace
         run: cargo test --workspace --locked || cargo test --workspace
 
+      # WHY: informational signal only on the first green pass — pedantic+style
+      # clippy noise should not gate CI while the workspace stabilises.
       - name: cargo clippy (warnings as errors)
         run: cargo clippy --workspace --all-targets -- -D warnings
-        continue-on-error: true  # informational only on first green pass
+        continue-on-error: true
 
   harness:
     name: build + run Crucible harness (3 classes × clean+planted)
@@ -77,14 +72,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo (cf-invariants-anchor workspace)
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . -> target
+      - uses: ./.github/actions/setup-rust
 
       - name: Install Anza / Solana CLI ${{ env.SOLANA_VERSION }}
         run: |
@@ -119,6 +107,9 @@ jobs:
             https://github.com/asymmetric-research/crucible.git crucible
           (cd crucible && git rev-parse HEAD)
 
+      # Second rust-cache step (Crucible build dir under <repo-root>/../crucible)
+      # is intentionally inline — the composite action targets the workspace
+      # cache; this one needs a distinct cache key for the pinned upstream.
       - name: Cache cargo (Crucible build)
         uses: Swatinem/rust-cache@v2
         with:
