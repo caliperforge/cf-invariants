@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Shared types for cf-invariants-anchor: contract surface, candidate invariants, scorecard."
+keywords = ["solana", "anchor", "fuzzing", "invariants"]
+categories = ["development-tools::testing"]
 
 [dependencies]
 serde = { workspace = true }

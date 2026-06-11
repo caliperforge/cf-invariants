@@ -7,7 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Render cf-invariants-anchor scorecards (markdown + JSON), mirroring cf-invariants (Cairo)."
+keywords = ["solana", "anchor", "fuzzing", "invariants"]
+categories = ["development-tools::testing"]
 
 [dependencies]
-cf-invariants-anchor-core = { path = "../cf-invariants-anchor-core" }
+cf-invariants-anchor-core = { path = "../cf-invariants-anchor-core", version = "0.1.0" }
 serde_json = { workspace = true }

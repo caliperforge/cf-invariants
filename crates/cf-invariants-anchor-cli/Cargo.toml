@@ -6,19 +6,22 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "cf-invariants-anchor CLI: ingest Anchor IDL, suggest invariants (heuristic or AI), emit Crucible-compatible fuzz fixtures."
+description = "CLI: ingest Anchor IDL, suggest invariants (heuristic or AI), emit Crucible / Trident fuzz fixtures."
+readme = "README.md"
+keywords = ["solana", "anchor", "fuzzing", "invariants", "crucible"]
+categories = ["command-line-utilities", "development-tools::testing"]
 
 [[bin]]
 name = "cf-invariants-anchor"
 path = "src/main.rs"
 
 [dependencies]
-cf-invariants-anchor-core    = { path = "../cf-invariants-anchor-core" }
-cf-invariants-anchor-idl     = { path = "../cf-invariants-anchor-idl" }
-cf-invariants-anchor-suggest = { path = "../cf-invariants-anchor-suggest" }
-cf-invariants-anchor-emit    = { path = "../cf-invariants-anchor-emit" }
-cf-invariants-anchor-report  = { path = "../cf-invariants-anchor-report" }
-cf-invariants-anchor-ai      = { path = "../cf-invariants-anchor-ai" }
+cf-invariants-anchor-core    = { path = "../cf-invariants-anchor-core",    version = "0.1.0" }
+cf-invariants-anchor-idl     = { path = "../cf-invariants-anchor-idl",     version = "0.1.0" }
+cf-invariants-anchor-suggest = { path = "../cf-invariants-anchor-suggest", version = "0.1.0" }
+cf-invariants-anchor-emit    = { path = "../cf-invariants-anchor-emit",    version = "0.1.0" }
+cf-invariants-anchor-report  = { path = "../cf-invariants-anchor-report",  version = "0.1.0" }
+cf-invariants-anchor-ai      = { path = "../cf-invariants-anchor-ai",      version = "0.1.0" }
 serde_json = { workspace = true }
 clap       = { workspace = true }
 anyhow     = { workspace = true }
