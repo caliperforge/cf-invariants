@@ -1,15 +1,14 @@
 # cf-invariants-anchor
 
-AI invariant-author for [Crucible](https://github.com/asymmetric-research/crucible)
-and [Trident](https://github.com/Ackee-Blockchain/trident) on Solana / Anchor.
+AI invariant-author for [Crucible](https://github.com/asymmetric-research/crucible) on Solana / Anchor;
+[Trident](https://github.com/Ackee-Blockchain/trident) emit is a staged Phase-1 target.
 
 Ingests an Anchor 0.30 / Codama-style IDL, proposes ranked invariant
 candidates from a class library, and emits a ready-to-run
-`#[fuzz_fixture]` + `#[invariant_test]` source file the harness can
-load directly. This crate does not rebuild the harness — Crucible and
-Trident already own the LiteSVM execution rails. The unclaimed
-quadrant is invariant authoring, and that is what `cf-invariants-anchor`
-ships.
+`#[fuzz_fixture]` + `#[invariant_test]` source file that Crucible can
+load directly. This crate does not rebuild the harness — Crucible owns
+the execution rails. The unclaimed quadrant is invariant authoring, and
+that is what `cf-invariants-anchor` ships.
 
 ## Install
 
@@ -26,6 +25,9 @@ cf-invariants-anchor ingest  <idl.json>
 cf-invariants-anchor suggest <idl.json> [--ai] [--audit-dir <dir>]
 cf-invariants-anchor emit    <idl.json> [--target crucible|trident] [--candidate-index N]
 ```
+
+`--target trident` currently emits a Phase-1 placeholder stub; full
+Trident fixture support is staged for a future release.
 
 `suggest --ai` runs the AI invariant-author flow against a pinned
 prompt. Default builds use a deterministic `MockTransport` so CI stays
