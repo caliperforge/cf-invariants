@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Shared types for cf-invariants-anchor: contract surface, candidate invariants, scorecard."
+readme = "README.md"
 keywords = ["solana", "anchor", "fuzzing", "invariants"]
 categories = ["development-tools::testing"]
 

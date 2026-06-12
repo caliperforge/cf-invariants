@@ -7,12 +7,13 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Anthropic-backed AI invariant suggester for cf-invariants-anchor. Live path is opt-in via env (CF_INVARIANTS_ANCHOR_AI_LIVE=1 + ANTHROPIC_API_KEY); CI uses MockTransport."
+readme = "README.md"
 keywords = ["solana", "anchor", "ai", "fuzzing", "anthropic"]
 categories = ["development-tools::testing"]
 
 [dependencies]
-cf-invariants-anchor-core    = { path = "../cf-invariants-anchor-core",    version = "0.1.0" }
-cf-invariants-anchor-suggest = { path = "../cf-invariants-anchor-suggest", version = "0.1.0" }
+cf-invariants-anchor-core    = { path = "../cf-invariants-anchor-core",    version = "0.1.1" }
+cf-invariants-anchor-suggest = { path = "../cf-invariants-anchor-suggest", version = "0.1.1" }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 thiserror   = { workspace = true }

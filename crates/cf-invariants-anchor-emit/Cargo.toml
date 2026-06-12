@@ -7,8 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Emit Crucible-compatible invariant fixtures (#[fuzz_fixture] + #[invariant_test]) from cf-invariants-anchor candidates."
+readme = "README.md"
 keywords = ["solana", "anchor", "fuzzing", "invariants", "crucible"]
 categories = ["development-tools::testing"]
 
 [dependencies]
-cf-invariants-anchor-core = { path = "../cf-invariants-anchor-core", version = "0.1.0" }
+cf-invariants-anchor-core = { path = "../cf-invariants-anchor-core", version = "0.1.1" }

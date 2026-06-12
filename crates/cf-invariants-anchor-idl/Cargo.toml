@@ -7,11 +7,12 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Anchor IDL ingestion: parses Anchor 0.30 / Codama-style IDL JSON into a typed contract surface."
+readme = "README.md"
 keywords = ["solana", "anchor", "idl", "fuzzing", "invariants"]
 categories = ["development-tools::testing"]
 
 [dependencies]
-cf-invariants-anchor-core = { path = "../cf-invariants-anchor-core", version = "0.1.0" }
+cf-invariants-anchor-core = { path = "../cf-invariants-anchor-core", version = "0.1.1" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

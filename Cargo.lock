@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "cf-invariants-anchor-ai"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "cf-invariants-anchor-core",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "cf-invariants-anchor-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cf-invariants-anchor-ai",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "cf-invariants-anchor-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -150,14 +150,14 @@ dependencies = [
 
 [[package]]
 name = "cf-invariants-anchor-emit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cf-invariants-anchor-core",
 ]
 
 [[package]]
 name = "cf-invariants-anchor-idl"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cf-invariants-anchor-core",
  "serde",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "cf-invariants-anchor-report"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cf-invariants-anchor-core",
  "serde_json",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "cf-invariants-anchor-suggest"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cf-invariants-anchor-core",
  "serde",

@@ -39,6 +39,10 @@ feature flag plus `CF_INVARIANTS_ANCHOR_AI_LIVE=1` and
 - `monotonic_accounting`
 - `access_control`
 
+## Toolchain
+
+MSRV is pinned at Rust 1.79 via the workspace `rust-version`.
+
 ## License
 
 Apache-2.0.

@@ -16,12 +16,12 @@ name = "cf-invariants-anchor"
 path = "src/main.rs"
 
 [dependencies]
-cf-invariants-anchor-core    = { path = "../cf-invariants-anchor-core",    version = "0.1.0" }
-cf-invariants-anchor-idl     = { path = "../cf-invariants-anchor-idl",     version = "0.1.0" }
-cf-invariants-anchor-suggest = { path = "../cf-invariants-anchor-suggest", version = "0.1.0" }
-cf-invariants-anchor-emit    = { path = "../cf-invariants-anchor-emit",    version = "0.1.0" }
-cf-invariants-anchor-report  = { path = "../cf-invariants-anchor-report",  version = "0.1.0" }
-cf-invariants-anchor-ai      = { path = "../cf-invariants-anchor-ai",      version = "0.1.0" }
+cf-invariants-anchor-core    = { path = "../cf-invariants-anchor-core",    version = "0.1.1" }
+cf-invariants-anchor-idl     = { path = "../cf-invariants-anchor-idl",     version = "0.1.1" }
+cf-invariants-anchor-suggest = { path = "../cf-invariants-anchor-suggest", version = "0.1.1" }
+cf-invariants-anchor-emit    = { path = "../cf-invariants-anchor-emit",    version = "0.1.1" }
+cf-invariants-anchor-report  = { path = "../cf-invariants-anchor-report",  version = "0.1.1" }
+cf-invariants-anchor-ai      = { path = "../cf-invariants-anchor-ai",      version = "0.1.1" }
 serde_json = { workspace = true }
 clap       = { workspace = true }
 anyhow     = { workspace = true }
