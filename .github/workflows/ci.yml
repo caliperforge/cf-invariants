@@ -33,6 +33,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch: {}
+  schedule:
+    # Weekly maintenance probe. A green badge here means "passes on
+    # today's toolchain", not "passed when we last pushed". Staggered
+    # across the public fleet to avoid hammering the GHA runner pool.
+    - cron: '29 6 * * 1'
 
 # Cancel superseded runs on the same ref to keep CI minutes lean.
 concurrency:
