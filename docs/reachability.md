@@ -58,12 +58,12 @@ Per planted class, the spike work adds:
    `keypair_from_rng(rng)` scaffolding (copy verbatim from the atlas
    reference implementation), followed by the class-specific
    deterministic action sequence:
-   - counter_ref: initialize → deposit → withdraw → assert
+   - counter_ref: initialize -> deposit -> withdraw -> assert
      `lifetime_deposited` did not decrease.
-   - vault_ref: initialize → deposit → transfer_out → assert
-     Σ balances == expected total.
+   - vault_ref: initialize -> deposit -> transfer_out -> assert
+     Sum balances == expected total.
    - kamino_lending_ref: (TBD per authored invariant).
-   - admin_ref: initialize → non-admin call → assert access refused.
+   - admin_ref: initialize -> non-admin call -> assert access refused.
 4. When `REACHABILITY_SEED` is absent, fallback to fixed values so
    normal `cargo run --release --bin regression` remains developer-
    friendly. The env-var-absent path is what CI's existing
@@ -76,9 +76,9 @@ Not landable as a batch scaffold; needs per-class authorship.
 
 ## What lands today
 
-- `ci/reachability_seeds.txt` — canonical 16-seed set, byte-identical
+- `ci/reachability_seeds.txt` : canonical 16-seed set, byte-identical
   to the sibling repo copies.
-- `docs/reachability.md` — this file: shape, uncovered status,
+- `docs/reachability.md` : this file: shape, uncovered status,
   spike scope.
 
 No workflow changes; no README verdict block claiming certification.
