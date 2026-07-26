@@ -19,26 +19,175 @@ pub struct BalanceField {
     pub ty: String,
 }
 
+/// Scalar/composite type as the Anchor 0.30+ IDL spells it. The emit
+/// crate maps these to Rust types when it generates standalone client
+/// bindings, so every variant here must round-trip losslessly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IdlType {
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    Bool,
+    F32,
+    F64,
+    Bytes,
+    String,
+    Pubkey,
+    Array(Box<IdlType>, usize),
+    Vec(Box<IdlType>),
+    Option(Box<IdlType>),
+    Defined(String),
+    /// A type shape this parser does not model. Carried verbatim so
+    /// emit can reject it LOUDLY instead of silently mis-rendering.
+    Unknown(String),
+}
+
+/// One typed instruction argument (name + IDL type).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct IxArgDef {
+    pub name: String,
+    #[serde(default = "IdlType::unknown_default")]
+    pub ty: IdlType,
+}
+
+impl IdlType {
+    fn unknown_default() -> IdlType {
+        IdlType::Unknown("absent".into())
+    }
+}
+
+impl Default for IdlType {
+    fn default() -> Self {
+        IdlType::Unknown("absent".into())
+    }
+}
+
+/// One PDA seed as the Anchor 0.30+ IDL carries it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum SeedDef {
+    /// Literal bytes.
+    Const { value: Vec<u8> },
+    /// Pubkey of another account in the same instruction (`path` may
+    /// be dotted for account-data field refs — emit rejects those).
+    Account { path: String },
+    /// Serialized bytes of an instruction argument.
+    Arg { path: String },
+}
+
+/// PDA derivation spec on an instruction account.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PdaDef {
+    pub seeds: Vec<SeedDef>,
+    /// Deriving program when not the target program (e.g. the ATA
+    /// program). `Const` bytes are a 32-byte pubkey.
+    #[serde(default)]
+    pub program: Option<SeedDef>,
+}
+
+/// Full metadata for one account slot on one instruction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct IxAccountDef {
+    pub name: String,
+    #[serde(default)]
+    pub writable: bool,
+    #[serde(default)]
+    pub signer: bool,
+    #[serde(default)]
+    pub optional: bool,
+    /// Fixed address (base58) if the IDL pins one.
+    #[serde(default)]
+    pub address: Option<String>,
+    #[serde(default)]
+    pub pda: Option<PdaDef>,
+}
+
 /// One Anchor program instruction (one entry in the IDL `instructions`
 /// array).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Instruction {
     pub name: String,
     /// Argument names, ordered.
     pub args: Vec<String>,
     /// Account names referenced (writable + read-only).
     pub accounts: Vec<String>,
+    /// 8-byte Anchor instruction discriminator (empty for legacy IDLs).
+    #[serde(default)]
+    pub discriminator: Vec<u8>,
+    /// Typed argument list (parallel to `args`; carries IDL types).
+    #[serde(default)]
+    pub arg_defs: Vec<IxArgDef>,
+    /// Full account metadata (parallel to `accounts`).
+    #[serde(default)]
+    pub account_defs: Vec<IxAccountDef>,
+}
+
+/// One state account type the program owns (IDL `accounts` array
+/// entry): the name links into `type_defs`; the discriminator is what
+/// `read_anchor_account` verifies at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AccountTypeDef {
+    pub name: String,
+    #[serde(default)]
+    pub discriminator: Vec<u8>,
+}
+
+/// Field on a defined type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FieldDef {
+    pub name: String,
+    pub ty: IdlType,
+}
+
+/// Body of a defined type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum TypeDefBody {
+    Struct { fields: Vec<FieldDef> },
+    /// Unit variants only — data-carrying variants come through as
+    /// `Unknown` fields on the variant list and emit rejects them.
+    Enum { variants: Vec<String> },
+}
+
+/// One entry in the IDL `types` array.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TypeDef {
+    pub name: String,
+    pub body: TypeDefBody,
+    /// IDL `serialization` marker (`bytemuck` / `bytemuckunsafe` for
+    /// zero-copy accounts; absent = borsh).
+    #[serde(default)]
+    pub serialization: Option<String>,
+    /// True iff the IDL `repr` says `packed` — the only zero-copy
+    /// layout whose byte offsets match sequential borsh reading.
+    #[serde(default)]
+    pub repr_packed: bool,
 }
 
 /// Canonical mid-form: what cf-invariants-anchor-idl produces and what
 /// cf-invariants-anchor-suggest consumes.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ContractSurface {
     pub program_id: String,
     pub program_name: String,
     pub instructions: Vec<Instruction>,
     /// All scalar balance-bearing fields across all account types.
     pub balance_fields: Vec<BalanceField>,
+    /// State account types (name + discriminator) from the IDL
+    /// `accounts` array.
+    #[serde(default)]
+    pub account_types: Vec<AccountTypeDef>,
+    /// Full defined-type layouts from the IDL `types` array.
+    #[serde(default)]
+    pub type_defs: Vec<TypeDef>,
 }
 
 impl ContractSurface {
@@ -108,8 +257,20 @@ pub struct InvariantCandidate {
     pub source: InvariantSource,
 }
 
-/// Fields the emit crate needs to synthesise a Crucible `#[invariant_test]`.
+/// One fixture-side ledger move: on successful `action`, apply `arg`
+/// (an instruction argument name) to the tracked field with the given
+/// direction. The SUGGESTER decides these (it owns the hypothesis);
+/// the emit crate renders them verbatim.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LedgerMove {
+    pub action: String,
+    pub arg: String,
+    /// `true` = saturating_add, `false` = saturating_sub.
+    pub add: bool,
+}
+
+/// Fields the emit crate needs to synthesise a Crucible `#[invariant_test]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct EmitHints {
     /// Account type to read with `ctx.read_anchor_account::<T>(&pda)`.
     pub account_type: String,
@@ -122,6 +283,10 @@ pub struct EmitHints {
     /// Action names whose post-conditions update the expected expression.
     /// The emit crate generates an `action_*` arm per name.
     pub action_names: Vec<String>,
+    /// Ledger bookkeeping per action (balance_conservation). Also used
+    /// by access_control setup to seed positive-direction state.
+    #[serde(default)]
+    pub ledger_moves: Vec<LedgerMove>,
 }
 
 /// Scorecard envelope — mirrors cf-invariants (Cairo) shape.

@@ -541,15 +541,16 @@ mod tests {
             program_id: "Va111tRef1111111111111111111111111111111111".into(),
             program_name: "vault_ref".into(),
             instructions: vec![
-                Instruction { name: "initialize".into(), args: vec![],                accounts: vec![] },
-                Instruction { name: "deposit".into(),    args: vec!["amount".into()], accounts: vec![] },
-                Instruction { name: "withdraw".into(),   args: vec!["amount".into()], accounts: vec![] },
+                Instruction { name: "initialize".into(), args: vec![],                accounts: vec![], ..Default::default() },
+                Instruction { name: "deposit".into(),    args: vec!["amount".into()], accounts: vec![], ..Default::default() },
+                Instruction { name: "withdraw".into(),   args: vec!["amount".into()], accounts: vec![], ..Default::default() },
             ],
             balance_fields: vec![BalanceField {
                 account: "Vault".into(),
                 field: "amount".into(),
                 ty: "u64".into(),
             }],
+            ..Default::default()
         }
     }
 

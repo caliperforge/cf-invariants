@@ -153,6 +153,9 @@ name = "cf-invariants-anchor-emit"
 version = "0.1.1"
 dependencies = [
  "cf-invariants-anchor-core",
+ "cf-invariants-anchor-idl",
+ "cf-invariants-anchor-suggest",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

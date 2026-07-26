@@ -19,7 +19,8 @@
 // candidates the renderer rejects — keep them in lockstep.
 
 use cf_invariants_anchor_core::{
-    ContractSurface, EmitHints, Instruction, InvariantCandidate, InvariantSource,
+    ContractSurface, EmitHints, IdlType, Instruction, InvariantCandidate, InvariantSource,
+    LedgerMove,
 };
 
 pub const SUGGESTER_VERSION: &str = "0.2.0";
@@ -149,6 +150,7 @@ impl InvariantClass for BalanceConservation {
                 field: f.field.clone(),
                 expected_expression: format!("fixture.expected_{}", f.field),
                 action_names: movement.iter().map(|s| s.to_string()).collect(),
+                ledger_moves: ledger_moves(surface),
             };
             candidates.push(InvariantCandidate {
                 name: invariant_name,
@@ -233,6 +235,7 @@ impl InvariantClass for MonotonicAccounting {
                 // Sentinel: emit pulls `last_seen_<field>` directly.
                 expected_expression: format!("fixture.last_seen_{}", f.field),
                 action_names: movement.iter().map(|s| s.to_string()).collect(),
+                ledger_moves: vec![],
             };
             candidates.push(InvariantCandidate {
                 name: invariant_name,
@@ -248,6 +251,58 @@ impl InvariantClass for MonotonicAccounting {
         }
         candidates
     }
+}
+
+/// Fixture-side ledger hypothesis: which instruction argument moves
+/// the tracked field, and in which direction. Direction comes from the
+/// movement-marker name (deliberately Phase-0 lexical, same status as
+/// `movement_instructions()`); the argument is the first scalar-uint
+/// arg the IDL declares on that instruction. No IDL args → no move
+/// (the arm still fires, the ledger just does not walk).
+fn ledger_moves(surface: &ContractSurface) -> Vec<LedgerMove> {
+    let mut moves = Vec::new();
+    for ix in surface.movement_instructions() {
+        let Some(add) = movement_direction(&ix.name) else {
+            continue;
+        };
+        let Some(arg) = first_scalar_uint_arg(ix) else {
+            continue;
+        };
+        moves.push(LedgerMove {
+            action: ix.name.clone(),
+            arg,
+            add,
+        });
+    }
+    moves
+}
+
+/// `Some(true)` = inflow, `Some(false)` = outflow, `None` = ambiguous
+/// (e.g. `transfer`) — no ledger move. Outflow markers are checked
+/// first so `unstake` does not match `stake`.
+fn movement_direction(name: &str) -> Option<bool> {
+    let n = name.to_ascii_lowercase();
+    const OUT: &[&str] = &["withdraw", "burn", "unstake", "redeem", "claim"];
+    const IN: &[&str] = &["deposit", "mint", "stake"];
+    if OUT.iter().any(|m| n.contains(m)) {
+        return Some(false);
+    }
+    if IN.iter().any(|m| n.contains(m)) {
+        return Some(true);
+    }
+    None
+}
+
+fn first_scalar_uint_arg(ix: &Instruction) -> Option<String> {
+    ix.arg_defs
+        .iter()
+        .find(|a| {
+            matches!(
+                a.ty,
+                IdlType::U8 | IdlType::U16 | IdlType::U32 | IdlType::U64 | IdlType::U128
+            )
+        })
+        .map(|a| a.name.clone())
 }
 
 /// A field name that signals ratchet-only / cumulative semantics.
@@ -318,18 +373,26 @@ impl InvariantClass for AccessControl {
                  violation — the program failed to verify the signer.",
                 ix.name
             );
-            // Pick the most plausible authority field name from the
+            // Pick the most plausible authority account name from the
             // surface. Phase-1 heuristic: prefer `depositor`, then
             // `authority`, then `owner`, then `admin`.
             let authority_field = pick_authority_field(surface);
             let emit_hints = EmitHints {
-                // Account_type is picked by emit using its own
-                // PDA-discovery heuristic; we name the convention
-                // field here as a hint.
-                account_type: "Vault".into(),
+                // The sticky-flag fixture reads no state account, so
+                // account_type is informational: the first tracked
+                // account type from THIS program's IDL (never a name
+                // copied from a reference example).
+                account_type: surface
+                    .balance_fields
+                    .first()
+                    .map(|f| f.account.clone())
+                    .unwrap_or_default(),
                 field: authority_field.clone(),
-                expected_expression: format!("fixture.vault.{}", authority_field),
+                expected_expression: "fixture.unauthorized_success_observed".into(),
                 action_names: vec![ix.name.clone()],
+                // Positive-direction moves seed observable state before
+                // the attack probes.
+                ledger_moves: ledger_moves(surface),
             };
             candidates.push(InvariantCandidate {
                 name: invariant_name,
@@ -384,7 +447,7 @@ fn pick_authority_field(surface: &ContractSurface) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cf_invariants_anchor_core::{BalanceField, ContractSurface, Instruction};
+    use cf_invariants_anchor_core::{BalanceField, ContractSurface, Instruction, IxArgDef};
 
     fn vault_surface() -> ContractSurface {
         ContractSurface {
@@ -395,16 +458,27 @@ mod tests {
                     name: "initialize".into(),
                     args: vec![],
                     accounts: vec!["vault".into(), "depositor".into(), "system_program".into()],
+                    ..Default::default()
                 },
                 Instruction {
                     name: "deposit".into(),
                     args: vec!["amount".into()],
                     accounts: vec!["vault".into(), "depositor".into(), "system_program".into()],
+                    arg_defs: vec![IxArgDef {
+                        name: "amount".into(),
+                        ty: IdlType::U64,
+                    }],
+                    ..Default::default()
                 },
                 Instruction {
                     name: "withdraw".into(),
                     args: vec!["amount".into()],
                     accounts: vec!["vault".into(), "depositor".into()],
+                    arg_defs: vec![IxArgDef {
+                        name: "amount".into(),
+                        ty: IdlType::U64,
+                    }],
+                    ..Default::default()
                 },
             ],
             balance_fields: vec![BalanceField {
@@ -412,6 +486,7 @@ mod tests {
                 field: "amount".into(),
                 ty: "u64".into(),
             }],
+            ..Default::default()
         }
     }
 
@@ -445,6 +520,38 @@ mod tests {
         let bc = BalanceConservation;
         let cs = bc.propose(&s);
         assert!(cs.iter().all(|c| c.name != "invariant_lifetime_deposited_conservation"));
+    }
+
+    #[test]
+    fn balance_conservation_carries_idl_derived_ledger_moves() {
+        let s = vault_surface();
+        let cs = BalanceConservation.propose(&s);
+        assert!(!cs.is_empty());
+        let moves = &cs[0].emit_hints.ledger_moves;
+        assert!(moves
+            .iter()
+            .any(|m| m.action == "deposit" && m.arg == "amount" && m.add));
+        assert!(moves
+            .iter()
+            .any(|m| m.action == "withdraw" && m.arg == "amount" && !m.add));
+    }
+
+    #[test]
+    fn access_control_hints_never_carry_reference_example_names() {
+        // C1 friction F9: access candidates carried `account_type:
+        // "Vault"` hardcoded even on programs with no such account.
+        let mut s = vault_surface();
+        s.balance_fields = vec![BalanceField {
+            account: "PoolState".into(),
+            field: "lp_supply".into(),
+            ty: "u64".into(),
+        }];
+        let cs = AccessControl.propose(&s);
+        assert!(!cs.is_empty());
+        for c in &cs {
+            assert_ne!(c.emit_hints.account_type, "Vault");
+            assert!(!c.emit_hints.expected_expression.contains("fixture.vault"));
+        }
     }
 
     // -- monotonic_accounting --------------------------------------------
@@ -488,6 +595,7 @@ mod tests {
             name: "initialize".into(),
             args: vec![],
             accounts: vec![],
+            ..Default::default()
         }];
         let m = MonotonicAccounting;
         assert!(m.propose(&s).is_empty());
@@ -520,6 +628,7 @@ mod tests {
             name: "admin_close".into(),
             args: vec![],
             accounts: vec!["vault".into(), "authority".into()],
+            ..Default::default()
         });
         let a = AccessControl;
         let cs = a.propose(&s);

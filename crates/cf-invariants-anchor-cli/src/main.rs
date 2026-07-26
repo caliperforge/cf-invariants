@@ -79,6 +79,12 @@ enum Command {
     },
 
     /// Emit a Crucible-compatible (or Trident-stub) fuzz fixture file.
+    ///
+    /// With `--scaffold-dir`, also writes a complete standalone harness
+    /// crate (Cargo.toml + src/main.rs). The harness does NOT depend on
+    /// the target program's crate — the fixture carries generated
+    /// IDL-derived client bindings — so any Anchor 0.30+ program with a
+    /// dumped `.so` is harnessable regardless of its anchor-lang version.
     Emit {
         idl: PathBuf,
         #[arg(long, default_value = "crucible")]
@@ -87,6 +93,20 @@ enum Command {
         candidate_index: usize,
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Path (relative to the harness crate) of the target program's
+        /// compiled `.so`. Default: `../../target/deploy/<name>.so`
+        /// (reference-pair layout), or `./<name>.so` when scaffolding.
+        /// For a deployed program: `solana program dump <PROGRAM_ID> <name>.so`.
+        #[arg(long)]
+        program_so: Option<String>,
+        /// Write a complete harness crate (Cargo.toml + src/main.rs)
+        /// into this directory.
+        #[arg(long)]
+        scaffold_dir: Option<PathBuf>,
+        /// Where the scaffold's Cargo.toml should expect the Crucible
+        /// v0.2.0 checkout, relative to the scaffold dir.
+        #[arg(long, default_value = "../crucible")]
+        crucible_path: String,
     },
 }
 
@@ -128,6 +148,9 @@ async fn main() -> Result<()> {
             target,
             candidate_index,
             out,
+            program_so,
+            scaffold_dir,
+            crucible_path,
         } => {
             let surface = cf_invariants_anchor_idl::ingest_path(&idl)?;
             let candidates = ClassRegistry::default().propose_all(&surface);
@@ -135,7 +158,30 @@ async fn main() -> Result<()> {
                 .get(candidate_index)
                 .ok_or_else(|| anyhow::anyhow!("no candidate at index {candidate_index}"))?;
             let target = parse_target(&target)?;
-            let rendered = cf_invariants_anchor_emit::render(&surface, candidate, target);
+            let opts = cf_invariants_anchor_emit::EmitOptions {
+                program_so: program_so.or_else(|| {
+                    scaffold_dir
+                        .as_ref()
+                        .map(|_| format!("./{}.so", surface.program_name))
+                }),
+            };
+            let rendered =
+                cf_invariants_anchor_emit::render_with_options(&surface, candidate, target, &opts)
+                    .context(
+                        "emit halted: the IDL does not carry data a faithful fixture needs \
+                         (no heuristic fallback is applied by design)",
+                    )?;
+            if let Some(dir) = scaffold_dir {
+                write_scaffold(&dir, &surface.program_name, &candidate.name, &crucible_path)?;
+                let main_rs = dir.join("src").join("main.rs");
+                std::fs::create_dir_all(main_rs.parent().unwrap())?;
+                std::fs::write(&main_rs, &rendered)?;
+                eprintln!(
+                    "scaffolded harness crate at {} (fixture: src/main.rs, feature: {})",
+                    dir.display(),
+                    candidate.name
+                );
+            }
             write_out(out, &rendered)?;
         }
     }
@@ -278,6 +324,54 @@ fn find_prompt_path() -> Result<PathBuf> {
     )
 }
 
+/// Write the standalone harness crate manifest. Dependency set mirrors
+/// the reference-pair harnesses (Crucible v0.2.0 + its anchor-lang
+/// 1.0.1 / solana 3.0 / libafl 0.15.1 pins). Deliberately NO dependency
+/// on the target program's crate.
+fn write_scaffold(
+    dir: &std::path::Path,
+    program_name: &str,
+    invariant_fn: &str,
+    crucible_path: &str,
+) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let crate_name = program_name.replace('-', "_");
+    let manifest = format!(
+        r#"[package]
+name = "{crate_name}_fuzz"
+version = "0.1.0"
+edition = "2021"
+description = "Crucible fuzz harness for {program_name} (emitted by cf-invariants-anchor)."
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+# Pinned to upstream Crucible v0.2.0
+# (https://github.com/asymmetric-research/crucible/tree/v0.2.0).
+crucible-fuzzer       = {{ path = "{crucible_path}/crates/crucible-fuzzer" }}
+crucible-test-context = {{ path = "{crucible_path}/crates/crucible-test-context" }}
+anchor-lang = "1.0.1"
+arbitrary = {{ version = "1", features = ["derive"] }}
+ctrlc = "3.4"
+libafl = {{ version = "0.15.1", features = ["std", "cli", "prelude"] }}
+libafl_bolts = {{ version = "0.15.1", features = ["std"] }}
+solana-keypair = "3.0"
+solana-pubkey = "3.0"
+solana-signer = "3.0"
+
+[[bin]]
+name = "invariant_test"
+path = "src/main.rs"
+
+[features]
+{invariant_fn} = []
+"#
+    );
+    std::fs::write(dir.join("Cargo.toml"), manifest)?;
+    Ok(())
+}
+
 fn parse_target(s: &str) -> Result<Target> {
     match s.to_ascii_lowercase().as_str() {
         "crucible" => Ok(Target::Crucible),
@@ -323,11 +417,13 @@ mod tests {
                     name: "deposit".into(),
                     args: vec!["amount".into()],
                     accounts: vec!["vault".into(), "depositor".into()],
+                    ..Default::default()
                 },
                 Instruction {
                     name: "withdraw".into(),
                     args: vec!["amount".into()],
                     accounts: vec!["vault".into(), "depositor".into()],
+                    ..Default::default()
                 },
             ],
             balance_fields: vec![BalanceField {
@@ -335,6 +431,7 @@ mod tests {
                 field: "amount".into(),
                 ty: "u64".into(),
             }],
+            ..Default::default()
         }
     }
 
