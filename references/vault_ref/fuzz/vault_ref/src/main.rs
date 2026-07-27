@@ -2,7 +2,7 @@
 //
 // Emitted by cf-invariants-anchor (IDL-driven codegen) for the balance_conservation class.
 // Target: Crucible v0.2.0 (asymmetric-research/crucible).
-// Source: Heuristic (suggester v0.2.0). No AI suggestion in this candidate.
+// Source: Heuristic (suggester v0.3.0). No AI suggestion in this candidate.
 //
 // Vault.amount == fixture-tracked sum of deposits − sum of withdrawals
 //

@@ -287,6 +287,74 @@ pub struct EmitHints {
     /// by access_control setup to seed positive-direction state.
     #[serde(default)]
     pub ledger_moves: Vec<LedgerMove>,
+    /// Relation-class bundle: one candidate carries N specs, each
+    /// rendered as an independent `#[invariant_test]` fn in the same
+    /// fixture. R2 (relation_invariants class) uses this to emit multi-
+    /// field / token-account bindings; other classes leave it empty.
+    #[serde(default)]
+    pub relation_specs: Vec<RelationSpec>,
+    /// Suppressed relation specs — helper-fn-name prefixes the emitter
+    /// should NOT render (e.g. `helper_pool_state_matches_lp_mint_supply`
+    /// to suppress the CP-Swap MINIMUM_LIQUIDITY-lockup RC-D finding once
+    /// the fixture author has validated it as by-design). Wired R3 to
+    /// close the `ok > 0` gap when a validated-by-design finding would
+    /// otherwise fail every seed and starve the corpus.
+    #[serde(default)]
+    pub suppressed_specs: Vec<String>,
+}
+
+/// One relation-invariant hypothesis. Emitter dispatches on `kind` and
+/// pulls the fields it needs; each kind is a distinct assertion shape.
+///
+/// Every field carries fixture-visible symbol names (instruction-account
+/// names as they appear in the IDL); the emitter maps those to the
+/// `a_<name>` / `kp_<name>` locals it already generates.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RelationSpec {
+    /// RC-A: cross-account name binding. `state_account_type` is the
+    /// program-owned struct read at `state_account_name`; `pubkey_field`
+    /// is the pubkey field on that struct; `bound_account_name` is the
+    /// sibling instruction account whose address the field must equal.
+    Binding {
+        state_account_type: String,
+        state_account_name: String,
+        pubkey_field: String,
+        bound_account_name: String,
+    },
+    /// RC-D: cross-program supply conservation. `state_account_type` /
+    /// `state_account_name` / `supply_field` name a `u64` on the pool;
+    /// `mint_account_name` is the sibling SPL Mint account whose
+    /// `Mint::supply` the field must equal.
+    SupplyMint {
+        state_account_type: String,
+        state_account_name: String,
+        supply_field: String,
+        mint_account_name: String,
+    },
+    /// RC-E: fee-accumulator monotonicity. The named `u64` field on
+    /// the state account must never decrease between successive
+    /// observations. Fixture caches `prev_<field>` between actions.
+    FeeMonotone {
+        state_account_type: String,
+        state_account_name: String,
+        field: String,
+    },
+    /// RC-G: vault ownership + mint binding. The named SPL token
+    /// account's `mint` and `owner` must equal the fixture-visible
+    /// expected values (`expected_mint_name` = a sibling mint account;
+    /// `expected_owner_name` = the pool authority PDA).
+    VaultBinding {
+        vault_account_name: String,
+        expected_mint_name: String,
+        expected_owner_name: String,
+    },
+    /// RC-I: mint-authority binding. The named SPL mint's
+    /// `mint_authority` must equal the fixture-visible authority.
+    MintAuthority {
+        mint_account_name: String,
+        expected_authority_name: String,
+    },
 }
 
 /// Scorecard envelope — mirrors cf-invariants (Cairo) shape.

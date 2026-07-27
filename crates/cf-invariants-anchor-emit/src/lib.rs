@@ -41,7 +41,7 @@
 
 use cf_invariants_anchor_core::{
     ContractSurface, FieldDef, IdlType, Instruction, InvariantCandidate, InvariantSource, PdaDef,
-    SeedDef, TypeDef, TypeDefBody,
+    RelationSpec, SeedDef, TypeDef, TypeDefBody,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
@@ -84,6 +84,14 @@ pub struct EmitOptions {
     /// binary with `solana program dump <PROGRAM_ID> <name>.so` and
     /// point this at it.
     pub program_so: Option<String>,
+    /// Path (relative to the harness crate) of a directory containing
+    /// mainnet account snapshots (`snapshot_<pubkey>.json` per account,
+    /// as produced by `solana account <pk> --output json --output-file
+    /// snapshot_<pk>.json`, plus an optional `manifest.json` naming the
+    /// alias bindings). When present the fixture preloads these into
+    /// the SVM before the fuzz loop so instructions execute against
+    /// real, non-trivial state instead of a blank ledger.
+    pub snapshot_dir: Option<String>,
 }
 
 /// Render the candidate as a fuzz-test source string.
@@ -117,6 +125,7 @@ fn render_crucible(
         "balance_conservation" => gen.render_balance(),
         "monotonic_accounting" => gen.render_monotonic(),
         "access_control" => gen.render_access_control(),
+        "relation_invariants" => gen.render_relation_bundle(),
         other => Err(EmitError::UnknownClass(other.to_string())),
     }
 }
@@ -146,6 +155,7 @@ struct Generator<'a> {
     surface: &'a ContractSurface,
     candidate: &'a InvariantCandidate,
     program_so: String,
+    snapshot_dir: Option<String>,
     /// Instructions renderable as fuzz action arms.
     supported: Vec<&'a Instruction>,
     /// name -> reason, for the header comment.
@@ -190,6 +200,7 @@ impl<'a> Generator<'a> {
             surface,
             candidate,
             program_so,
+            snapshot_dir: opts.snapshot_dir.clone(),
             supported,
             excluded,
             roles,
@@ -243,6 +254,25 @@ impl<'a> Generator<'a> {
     }
 
     fn imports_and_consts(&self) -> String {
+        let snapshot_const = match &self.snapshot_dir {
+            Some(dir) => format!(
+                "\n/// Mainnet account snapshot directory (relative to harness). The\n\
+                 /// fixture preloads every `snapshot_<pubkey>.json` here into the\n\
+                 /// SVM before the fuzz loop, so instructions execute against real,\n\
+                 /// non-trivial state instead of a blank ledger. If the directory\n\
+                 /// does not exist at run time, preload is skipped silently and the\n\
+                 /// fixture runs against a blank SVM (the R1 behavior).\n\
+                 const SNAPSHOT_DIR: &str = \"{dir}\";\n\
+                 /// Alias manifest inside SNAPSHOT_DIR: maps IDL-account names\n\
+                 /// (e.g. `pool_state`, `lp_mint`, `token_0_vault`) to the\n\
+                 /// mainnet base58 pubkey the snapshot file is keyed on. The\n\
+                 /// fixture uses this to rebind its `a_<name>` locals AFTER\n\
+                 /// creating its own placeholders, so subsequent action arms\n\
+                 /// address the ingested state.\n\
+                 const SNAPSHOT_MANIFEST: &str = \"manifest.json\";"
+            ),
+            None => String::new(),
+        };
         format!(
             "#![allow(unused_imports, dead_code, unused_variables, clippy::too_many_arguments)]\n\
              \n\
@@ -261,9 +291,226 @@ impl<'a> Generator<'a> {
              const PROGRAM_ID: &str = \"{}\";\n\
              /// Compiled target program. For a deployed program, produce this\n\
              /// with: `solana program dump {} <name>.so`.\n\
-             const PROGRAM_SO: &str = \"{}\";",
+             const PROGRAM_SO: &str = \"{}\";{snapshot_const}",
             self.surface.program_id, self.surface.program_id, self.program_so
         )
+    }
+
+    /// Snapshot-preload block for `setup()`. Reads a manifest JSON of
+    /// `{"aliases": {"<idl_name>": "<mainnet_pubkey_base58>"}}` and,
+    /// for each entry, loads `snapshot_<pubkey>.json` (as produced by
+    /// `solana account ... --output json`) into the SVM via
+    /// `ctx.create_account().data(...).owner(...).lamports(...).create()`
+    /// and REBINDS the local `a_<idl_name>` to the mainnet pubkey so
+    /// action arms address the ingested state.
+    ///
+    /// Silently no-ops if `SNAPSHOT_DIR` doesn't exist at run time.
+    /// Emit-time: contributes to `setup()`; empty string when no
+    /// snapshot dir was configured.
+    fn snapshot_preload(&self, aliasable: &[String]) -> String {
+        if self.snapshot_dir.is_none() {
+            return String::new();
+        }
+        // Only rebind locals we actually produced (placeholders + PDAs).
+        // Signers stay signers — they're the fuzz signer wallet, not
+        // preloaded from mainnet.
+        let rebind_lines: String = aliasable
+            .iter()
+            .map(|name| {
+                let f = addr_field(name);
+                format!(
+                    "                    \"{name}\" => {{ {f} = pk; }},\n"
+                )
+            })
+            .collect();
+        // User-token-account creation: manifest can declare
+        // `user_token_accounts: [{account_alias, mint_alias,
+        // signer_alias, amount}]`. Each entry creates an SPL TokenAccount
+        // at `a_<account_alias>` (owned by the fuzz signer for
+        // `signer_alias`, mint from `a_<mint_alias>`), so instructions
+        // that read the user's balance find real bytes instead of an
+        // empty placeholder — the R1 §5 "ok: 0" gap for movement calls.
+        let user_ata_lines: String = aliasable
+            .iter()
+            .map(|name| {
+                let f = addr_field(name);
+                format!(
+                    "                                \"{name}\" => {f},\n"
+                )
+            })
+            .collect();
+        // Signer lookups by name so `signer_alias` resolves to the
+        // fuzz keypair's pubkey.
+        let signer_lookup: String = self
+            .roles
+            .iter()
+            .filter(|(_, r)| matches!(r, Role::Signer))
+            .map(|(n, _)| {
+                let f = kp_field(n);
+                format!(
+                    "                                \"{n}\" => {f}.pubkey(),\n"
+                )
+            })
+            .collect();
+        format!(
+            "\n        // -- Mainnet snapshot preload (R2b).\n\
+             \x20       // Non-trivial state (config / pool / mints / vaults) that the\n\
+             \x20       // Anchor IDL cannot express is loaded here from mainnet dumps.\n\
+             \x20       // Manifest: {{ \"aliases\": {{ \"<idl_name>\": \"<mainnet_pubkey>\" }} }}.\n\
+             \x20       // Snapshot files: `snapshot_<pubkey>.json` per\n\
+             \x20       // `solana account <pk> --output json`. Absent dir → no-op.\n\
+             \x20       let snap_root = std::path::Path::new(SNAPSHOT_DIR);\n\
+             \x20       if snap_root.exists() {{\n\
+             \x20           let manifest_path = snap_root.join(SNAPSHOT_MANIFEST);\n\
+             \x20           if let Ok(txt) = std::fs::read_to_string(&manifest_path) {{\n\
+             \x20               if let Ok(m) = serde_json::from_str::<serde_json::Value>(&txt) {{\n\
+             \x20                   if let Some(aliases) = m.get(\"aliases\").and_then(|v| v.as_object()) {{\n\
+             \x20                       for (idl_name, pk_val) in aliases {{\n\
+             \x20                           let pk_str = match pk_val.as_str() {{ Some(s) => s, None => continue }};\n\
+             \x20                           let pk = match Pubkey::from_str(pk_str) {{ Ok(p) => p, Err(_) => continue }};\n\
+             \x20                           // ALWAYS rebind the fixture's local for this IDL name\n\
+             \x20                           // (even when the snapshot file is missing) — sibling\n\
+             \x20                           // accounts like `token_0_program` need to resolve to the\n\
+             \x20                           // real SPL Token program id (already in the SVM), not a\n\
+             \x20                           // random placeholder pubkey.\n\
+             \x20                           match idl_name.as_str() {{\n\
+             {rebind_lines}\
+             \x20                               _ => {{}},\n\
+             \x20                           }}\n\
+             \x20                           // Best-effort snapshot preload of the account bytes\n\
+             \x20                           // themselves. Missing file → skip (already rebound above).\n\
+             \x20                           let snap_path = snap_root.join(format!(\"snapshot_{{}}.json\", pk_str));\n\
+             \x20                           let snap_txt = match std::fs::read_to_string(&snap_path) {{ Ok(t) => t, Err(_) => continue }};\n\
+             \x20                           let snap: serde_json::Value = match serde_json::from_str(&snap_txt) {{ Ok(v) => v, Err(_) => continue }};\n\
+             \x20                           let acct = snap.get(\"account\").unwrap_or(&snap);\n\
+             \x20                           let owner_str = match acct.get(\"owner\").and_then(|v| v.as_str()) {{ Some(s) => s, None => continue }};\n\
+             \x20                           let owner_pk = match Pubkey::from_str(owner_str) {{ Ok(p) => p, Err(_) => continue }};\n\
+             \x20                           let lamports = acct.get(\"lamports\").and_then(|v| v.as_u64()).unwrap_or(0);\n\
+             \x20                           let data_bytes: Vec<u8> = if let Some(arr) = acct.get(\"data\").and_then(|v| v.as_array()) {{\n\
+             \x20                               // `solana account --output json` emits [payload, encoding].\n\
+             \x20                               // Accept either order for robustness.\n\
+             \x20                               if arr.len() >= 2 {{\n\
+             \x20                                   let a0 = arr[0].as_str().unwrap_or(\"\");\n\
+             \x20                                   let a1 = arr[1].as_str().unwrap_or(\"\");\n\
+             \x20                                   let (payload, encoded) = if a1 == \"base64\" || a1 == \"base58\" {{ (a0, a1) }} else {{ (a1, a0) }};\n\
+             \x20                                   match encoded {{\n\
+             \x20                                       \"base64\" => base64_decode(payload),\n\
+             \x20                                       _ => Vec::new(),\n\
+             \x20                                   }}\n\
+             \x20                               }} else {{ Vec::new() }}\n\
+             \x20                           }} else if let Some(bytes) = acct.get(\"data\").and_then(|v| v.as_str()) {{\n\
+             \x20                               base64_decode(bytes)\n\
+             \x20                           }} else {{ Vec::new() }};\n\
+             \x20                           if acct.get(\"executable\").and_then(|v| v.as_bool()).unwrap_or(false) {{\n\
+             \x20                               // Executable programs are loaded via add_program, not\n\
+             \x20                               // set_account. Skip — the SVM already has SPL Token, ATA,\n\
+             \x20                               // System, etc. as built-ins.\n\
+             \x20                               continue;\n\
+             \x20                           }}\n\
+             \x20                           let _ = ctx\n\
+             \x20                               .create_account()\n\
+             \x20                               .pubkey(pk)\n\
+             \x20                               .owner(owner_pk)\n\
+             \x20                               .lamports(if lamports > 0 {{ lamports }} else {{ INITIAL_BALANCE }})\n\
+             \x20                               .data(&data_bytes)\n\
+             \x20                               .create();\n\
+             \x20                       }}\n\
+             \x20                       // -- User SPL token accounts (R2b, per §5 item 1)\n\
+             \x20                       if let Some(utas) = m.get(\"user_token_accounts\").and_then(|v| v.as_array()) {{\n\
+             \x20                           for uta in utas {{\n\
+             \x20                               let acct_alias = match uta.get(\"account_alias\").and_then(|v| v.as_str()) {{ Some(s) => s, None => continue }};\n\
+             \x20                               let mint_alias = match uta.get(\"mint_alias\").and_then(|v| v.as_str()) {{ Some(s) => s, None => continue }};\n\
+             \x20                               let signer_alias = match uta.get(\"signer_alias\").and_then(|v| v.as_str()) {{ Some(s) => s, None => continue }};\n\
+             \x20                               let amount = uta.get(\"amount\").and_then(|v| v.as_u64()).unwrap_or(1_000_000_000);\n\
+             \x20                               let acct_pk = match acct_alias {{\n\
+             {user_ata_lines}\
+             \x20                                   _ => continue,\n\
+             \x20                               }};\n\
+             \x20                               let mint_pk = match mint_alias {{\n\
+             {user_ata_lines}\
+             \x20                                   _ => continue,\n\
+             \x20                               }};\n\
+             \x20                               let signer_pk = match signer_alias {{\n\
+             {signer_lookup}\
+             \x20                                   _ => continue,\n\
+             \x20                               }};\n\
+             \x20                               let _ = ctx\n\
+             \x20                                   .create_token_account()\n\
+             \x20                                   .pubkey(acct_pk)\n\
+             \x20                                   .mint(mint_pk)\n\
+             \x20                                   .token_owner(signer_pk)\n\
+             \x20                                   .amount(amount)\n\
+             \x20                                   .create();\n\
+             \x20                           }}\n\
+             \x20                       }}\n\
+             \x20                   }}\n\
+             \x20               }}\n\
+             \x20           }}\n\
+             \x20       }}"
+        )
+    }
+
+    /// R3 closure A: baseline-seeding block. For each SupplyMint spec,
+    /// reads the just-preloaded state account + SPL Mint and records the
+    /// initial `mint.supply - state.<supply_field>` drift into a local
+    /// (later stashed into the fixture struct). For each FeeMonotone
+    /// spec, reads the state account and records the initial value so
+    /// `prev_<field>` starts from the loaded on-chain value.
+    ///
+    /// Emitted code is defensive: any read failure leaves the local at
+    /// its default (`None` for SupplyMint → helper skips; `0` for
+    /// FeeMonotone → helper starts from 0, matches R2b behavior). No
+    /// panics on cold-start against an absent snapshot dir.
+    #[allow(clippy::type_complexity)]
+    fn baseline_seed_block(
+        &self,
+        supplymint_baselines: &[(String, String, String, String, String)],
+        monotone_fields: &[(String, String, String)],
+    ) -> String {
+        if supplymint_baselines.is_empty() && monotone_fields.is_empty() {
+            return String::new();
+        }
+        let mut out = String::new();
+        out.push_str(
+            "\n        // -- R3 closure A: seed baselines from just-preloaded state.\n\
+             \x20       // SupplyMint drift: current invariant becomes\n\
+             \x20       //   (mint.supply - state.<field>) == baseline_delta   (drift-preserving),\n\
+             \x20       // instead of strict equality (which fires on every seed against\n\
+             \x20       // CP-Swap's design-lockup MINIMUM_LIQUIDITY offset). FeeMonotone:\n\
+             \x20       // prev_<field> starts at the on-chain value so the assertion is\n\
+             \x20       // non-trivial from step 0.\n",
+        );
+        for (state_ty, _state_name, supply_field, mint_name, id) in supplymint_baselines {
+            let ty_ident = capitalize_snake(state_ty);
+            let field_id = sanitize_ident(supply_field);
+            let mint_addr = format!("a_{}", sanitize_ident(mint_name));
+            // Find the state account addr for this spec (any spec in the
+            // SupplyMint tuple carries the same state_account_name — we
+            // pass it in the tuple; use it here).
+            let state_addr = format!("a_{}", sanitize_ident(_state_name));
+            out.push_str(&format!(
+                "        let baseline_local_{id}: Option<i128> = {{\n\
+                 \x20           let acct = ctx.read_anchor_account::<{ty_ident}>(&{state_addr}).ok();\n\
+                 \x20           let mint = ctx.svm.get_account(&{mint_addr}).and_then(|a| spl_token::state::Mint::unpack(&a.data).ok());\n\
+                 \x20           match (acct, mint) {{\n\
+                 \x20               (Some(s), Some(m)) => Some(m.supply as i128 - s.{field_id} as i128),\n\
+                 \x20               _ => None,\n\
+                 \x20           }}\n\
+                 \x20       }};\n"
+            ));
+        }
+        for (state_ty, field, state_name) in monotone_fields {
+            let ty_ident = capitalize_snake(state_ty);
+            let field_id = sanitize_ident(field);
+            let state_addr = format!("a_{}", sanitize_ident(state_name));
+            out.push_str(&format!(
+                "        let baseline_prev_{field_id}: u64 = ctx\n\
+                 \x20           .read_anchor_account::<{ty_ident}>(&{state_addr})\n\
+                 \x20           .map(|s| s.{field_id})\n\
+                 \x20           .unwrap_or(0);\n"
+            ));
+        }
+        out
     }
 
     /// Generated standalone bindings: instruction data + account-meta
@@ -902,7 +1149,7 @@ impl<'a> Generator<'a> {
                 continue;
             }
             let rust_ty = scalar_rust_type(&arg.ty).expect("supported => scalar or pubkey");
-            match range_attr(&arg.ty) {
+            match range_attr_for_arg(&arg.name, &arg.ty) {
                 Some(r) => params.push_str(&format!(", #[range({r})] {ident}: {rust_ty}")),
                 None => params.push_str(&format!(", {ident}: {rust_ty}")),
             }
@@ -951,7 +1198,7 @@ impl<'a> Generator<'a> {
                 continue;
             }
             let rust_ty = scalar_rust_type(&arg.ty).expect("supported => scalar or pubkey");
-            match range_attr(&arg.ty) {
+            match range_attr_for_arg(&arg.name, &arg.ty) {
                 Some(r) => params.push_str(&format!(", #[range({r})] {ident}: {rust_ty}")),
                 None => params.push_str(&format!(", {ident}: {rust_ty}")),
             }
@@ -1314,6 +1561,569 @@ impl<'a> Generator<'a> {
         ))
     }
 
+    // -- relation_invariants (R2b) ------------------------------------------
+
+    /// Render one fixture containing many `#[invariant_test]` fns —
+    /// one per RelationSpec in the bundle. Setup is shared: PDAs +
+    /// signers + placeholders + snapshot preload run once; each
+    /// invariant reads the current live state and asserts.
+    fn render_relation_bundle(&self) -> Result<String, EmitError> {
+        let specs = &self.candidate.emit_hints.relation_specs;
+        if specs.is_empty() {
+            return Err(EmitError::Unsupported(
+                "relation_invariants candidate has no relation_specs — nothing to render".into(),
+            ));
+        }
+
+        // Filter specs to only those whose named accounts are actually
+        // visible in this program's supported instructions (i.e. the
+        // emitter produced a `Role` for them). This drops specs that
+        // reference accounts on excluded instructions.
+        let mut valid_specs = Vec::new();
+        let mut skipped: Vec<(RelationSpec, String)> = Vec::new();
+        let suppressed_list = &self.candidate.emit_hints.suppressed_specs;
+        for spec in specs {
+            // R3 closure B: allow the caller to suppress a validated
+            // by-design finding (e.g. CP-Swap's MINIMUM_LIQUIDITY lockup
+            // that makes RC-D fire on every seed on Raydium). Matched
+            // against the helper fn name the spec would render as, either
+            // exactly or as a prefix — so `helper_pool_state_matches_lp_mint_supply`
+            // and `helper_pool_state_matches_lp` both work.
+            let helper_name = self.helper_fn_name(spec);
+            if suppressed_list
+                .iter()
+                .any(|s| helper_name == *s || helper_name.starts_with(s))
+            {
+                skipped.push((spec.clone(), format!("suppressed by --suppress-spec {helper_name}")));
+                continue;
+            }
+            match self.check_spec_visible(spec) {
+                Ok(()) => valid_specs.push(spec.clone()),
+                Err(reason) => skipped.push((spec.clone(), reason.to_string())),
+            }
+        }
+        if valid_specs.is_empty() {
+            return Err(EmitError::Unsupported(format!(
+                "no relation_specs are renderable — every candidate references accounts \
+                 only present on excluded instructions ({} specs total, {} skipped)",
+                specs.len(),
+                skipped.len()
+            )));
+        }
+
+        // Collect state account types we need bindings for (unique) —
+        // ONLY from valid_specs (not raw specs), so a spec that got
+        // filtered out (excluded instructions, suppressed by CLI, etc.)
+        // does NOT force a state-type binding that would fail to render
+        // (e.g. a non-packed zero-copy struct we can't emit).
+        let mut needed_state_types: BTreeSet<String> = BTreeSet::new();
+        for spec in &valid_specs {
+            match spec {
+                RelationSpec::Binding {
+                    state_account_type, ..
+                }
+                | RelationSpec::SupplyMint {
+                    state_account_type, ..
+                }
+                | RelationSpec::FeeMonotone {
+                    state_account_type, ..
+                } => {
+                    needed_state_types.insert(state_account_type.clone());
+                }
+                RelationSpec::VaultBinding { .. } | RelationSpec::MintAuthority { .. } => {}
+            }
+        }
+        let state_types: Vec<String> = needed_state_types.into_iter().collect();
+
+        // The FeeMonotone specs need a `prev_<field>` fixture-side cache;
+        // collect them so we can add fields + init.
+        let mut monotone_fields: Vec<(String, String, String)> = Vec::new(); // (ty, field, state_account_name)
+        let mut fee_seen: BTreeSet<(String, String)> = BTreeSet::new();
+        for spec in &valid_specs {
+            if let RelationSpec::FeeMonotone {
+                state_account_type,
+                state_account_name,
+                field,
+            } = spec
+            {
+                let key = (state_account_type.clone(), field.clone());
+                if fee_seen.insert(key.clone()) {
+                    monotone_fields.push((
+                        state_account_type.clone(),
+                        field.clone(),
+                        state_account_name.clone(),
+                    ));
+                }
+            }
+        }
+        let mut fee_field_decls = String::new();
+        let mut fee_field_inits = String::new();
+        for (_, f, _) in &monotone_fields {
+            let id = sanitize_ident(f);
+            fee_field_decls.push_str(&format!("    prev_{id}: u64,\n"));
+            fee_field_inits.push_str(&format!("            prev_{id}: 0,\n"));
+        }
+
+        // R3 closure A: baseline delta seeded from snapshot state for
+        // SupplyMint specs, so the invariant flips from strict-equality
+        // (which fires on every seed against CP-Swap's design-lockup
+        // 100-token drift, starving the corpus) to differential-drift-
+        // preservation (`current_drift == baseline_drift_at_snapshot_load`).
+        // Also enables per-spec `baseline_prev_<field>` for FeeMonotone so
+        // `prev_<field>` starts from the loaded on-chain value rather than
+        // 0 (which is trivially <=).
+        let mut supplymint_baselines: Vec<(String, String, String, String, String)> = Vec::new();
+        // (state_account_type, state_account_name, supply_field, mint_account_name, baseline_field_id)
+        let mut supply_seen: BTreeSet<(String, String, String)> = BTreeSet::new();
+        for spec in &valid_specs {
+            if let RelationSpec::SupplyMint {
+                state_account_type,
+                state_account_name,
+                supply_field,
+                mint_account_name,
+            } = spec
+            {
+                let key = (
+                    state_account_type.clone(),
+                    supply_field.clone(),
+                    mint_account_name.clone(),
+                );
+                if supply_seen.insert(key.clone()) {
+                    let baseline_id = format!(
+                        "{}_{}",
+                        sanitize_ident(supply_field),
+                        sanitize_ident(mint_account_name)
+                    );
+                    supplymint_baselines.push((
+                        state_account_type.clone(),
+                        state_account_name.clone(),
+                        supply_field.clone(),
+                        mint_account_name.clone(),
+                        baseline_id,
+                    ));
+                }
+            }
+        }
+        let mut baseline_decls = String::new();
+        let mut baseline_inits = String::new();
+        for (_, _, _, _, id) in &supplymint_baselines {
+            baseline_decls.push_str(&format!("    baseline_delta_{id}: Option<i128>,\n"));
+            baseline_inits.push_str(&format!("            baseline_delta_{id}: None,\n"));
+        }
+
+        let fixture_name = self.fixture_name("Relations");
+        let bundle_len = valid_specs.len();
+
+        let header = self.header(&format!(
+            "// R2b relation bundle: {bundle_len} invariant(s) emitted from IDL structure\n\
+             // (RC-A / RC-D / RC-E / RC-G / RC-I). Setup preloads a mainnet snapshot when\n\
+             // `SNAPSHOT_DIR` is present, so instructions execute against real,\n\
+             // non-trivial state instead of a blank ledger."
+        ));
+        let imports = self.imports_and_consts();
+        let bindings = self.bindings(&state_types)?;
+
+        // Aliasable placeholder names — everything in the roles map
+        // that isn't a signer keypair (those are the fresh fuzz signer,
+        // never mainnet-preloaded).
+        let aliasable: Vec<String> = self
+            .roles
+            .iter()
+            .filter(|(_, r)| !matches!(r, Role::Signer))
+            .map(|(n, _)| n.clone())
+            .collect();
+
+        // Custom setup: standard resolution+bootstrap, plus snapshot
+        // preload + relation-bundle-specific field inits.
+        let extra_inits = format!(
+            "            snapshot_loaded: true,\n{fee_field_inits}{baseline_inits}"
+        );
+        let (mut setup, fields) = self.setup_fn(&extra_inits, false);
+        // Inject the snapshot preload right before the `Self { ... }`
+        // return so rebound locals apply.
+        let preload = self.snapshot_preload(&aliasable);
+        // R3 closure A: baseline-seeding block that reads the just-preloaded
+        // state accounts and computes (a) the SupplyMint drift baseline and
+        // (b) the FeeMonotone `prev_<field>` starting value from real on-chain
+        // values. Runs INSIDE setup, after the snapshot preload, so `ctx` and
+        // the (now-rebound) `a_<name>` locals resolve to the live mainnet
+        // accounts. Empty when no baselines are needed.
+        let baseline_seed = self.baseline_seed_block(&supplymint_baselines, &monotone_fields);
+        if !preload.is_empty() || !baseline_seed.is_empty() {
+            // Convert immutable placeholder lets to mutable so we can
+            // rebind them from the snapshot manifest.
+            setup = setup.replace("        let a_", "        let mut a_");
+            let mut injected = String::new();
+            if !preload.is_empty() {
+                injected.push_str(&preload);
+                injected.push('\n');
+            }
+            if !baseline_seed.is_empty() {
+                // The baseline seeder emits `let mut baseline_..._<id> = None`
+                // locals + reads that produce a value; the fixture struct
+                // fields are populated in the `Self { ... }` return below.
+                injected.push_str(&baseline_seed);
+                injected.push('\n');
+                // Rewrite `baseline_delta_<id>: None,` in extra_inits to pull
+                // from the local we just computed.
+                for (_, _, _, _, id) in &supplymint_baselines {
+                    setup = setup.replace(
+                        &format!("baseline_delta_{id}: None,"),
+                        &format!("baseline_delta_{id}: baseline_local_{id},"),
+                    );
+                }
+                for (_, f, _) in &monotone_fields {
+                    let fid = sanitize_ident(f);
+                    setup = setup.replace(
+                        &format!("prev_{fid}: 0,"),
+                        &format!("prev_{fid}: baseline_prev_{fid},"),
+                    );
+                }
+            }
+            setup = setup.replace(
+                "\n        Self {\n",
+                &format!("\n{injected}\n        Self {{\n"),
+            );
+        }
+
+        let mut struct_fields = String::new();
+        for (f, ty) in &fields {
+            struct_fields.push_str(&format!("    {f}: {ty},\n"));
+        }
+
+        // Action arms so the fuzzer actually EXERCISES the program.
+        let mut arms = String::new();
+        for ix in &self.supported {
+            arms.push('\n');
+            arms.push_str(&self.action_arm(ix, None));
+        }
+
+        // Emit each relation spec as a regular helper fn, then a
+        // single `#[invariant_test]` bundle fn that dispatches to all
+        // of them in order. Crucible's `#[fuzz_fixture]` /
+        // `#[invariant_test]` macros generate `main` for the fn whose
+        // name matches the enabled feature — a single-invariant bundle
+        // keeps that contract intact.
+        let mut helpers = String::new();
+        let mut bundle_body = String::new();
+        for spec in &valid_specs {
+            let (helper_fn_name, helper_code) = self.render_relation_helper(spec)?;
+            helpers.push('\n');
+            helpers.push_str(&helper_code);
+            bundle_body.push_str(&format!("    {helper_fn_name}(fixture);\n"));
+        }
+        let invariant_fn_name = &self.candidate.name;
+        let invariants = format!(
+            "\n{helpers}\n/// Bundle invariant — dispatches to every derived relation check.\n\
+             /// Any per-relation `fuzz_assert_*` failure fails the bundle.\n\
+             #[invariant_test]\n\
+             fn {invariant_fn_name}(fixture: &mut {fixture_name}) {{\n\
+             {bundle_body}}}\n"
+        );
+
+        // Aggregate invariant that fails if too many actions still
+        // rejected (surfaces the R1 execution-depth gap explicitly —
+        // does NOT itself fail the run; comment-only signal).
+        let mut skipped_note = String::new();
+        if !skipped.is_empty() {
+            skipped_note.push_str("//\n// Skipped relation specs (referenced accounts are only present\n// on excluded instructions):\n");
+            for (spec, reason) in &skipped {
+                skipped_note.push_str(&format!("//   - {spec:?}: {reason}\n"));
+            }
+        }
+
+        Ok(format!(
+            "{header}{skipped_note}\n\
+             {imports}\n\
+             // Pack imported from spl-token's re-export to match its\n\
+             // Pack impls (avoids the multi-version solana-program-pack\n\
+             // conflict when the harness pulls in both anchor-lang and\n\
+             // spl-token from different registry versions).\n\
+             use spl_token::solana_program::program_pack::Pack;\n\
+             \n\
+             // Small base64 decoder — the mainnet snapshot preload reads\n\
+             // `[\"base64\", \"...\"]` account-data payloads from `solana account\n\
+             // --output json` files. Keeps the harness free of a `base64` crate dep.\n\
+             fn base64_decode(s: &str) -> Vec<u8> {{\n\
+             \x20   const T: [i8; 256] = {{ let mut t = [-1i8; 256]; let a = b\"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\"; let mut i = 0; while i < 64 {{ t[a[i] as usize] = i as i8; i += 1; }} t }};\n\
+             \x20   let mut out = Vec::with_capacity(s.len() * 3 / 4);\n\
+             \x20   let mut buf: u32 = 0; let mut bits: i32 = 0;\n\
+             \x20   for &b in s.as_bytes() {{\n\
+             \x20       if b == b'=' || b == b'\\n' || b == b'\\r' || b == b' ' {{ continue; }}\n\
+             \x20       let v = T[b as usize]; if v < 0 {{ continue; }}\n\
+             \x20       buf = (buf << 6) | (v as u32); bits += 6;\n\
+             \x20       if bits >= 8 {{ bits -= 8; out.push((buf >> bits) as u8); buf &= (1u32 << bits) - 1; }}\n\
+             \x20   }}\n\
+             \x20   out\n\
+             }}\n\
+             \n\
+             {bindings}\n\
+             #[derive(Clone)]\n\
+             struct {fixture_name} {{\n\
+             \x20   ctx: TestContext,\n\
+             \x20   program_id: Pubkey,\n\
+             {struct_fields}\
+             \x20   /// True iff the snapshot preload ran (kept for visibility).\n\
+             \x20   snapshot_loaded: bool,\n\
+             {fee_field_decls}{baseline_decls}\
+             }}\n\
+             \n\
+             #[fuzz_fixture]\n\
+             impl {fixture_name} {{\n\
+             {setup}\n\
+             {arms}}}\n\
+             {invariants}"
+        ))
+    }
+
+    /// Canonical helper-fn name for one spec — the token users match
+    /// against with `--suppress-spec`. Kept in sync with the
+    /// per-variant `format!("helper_...")` in `render_relation_helper`.
+    fn helper_fn_name(&self, spec: &RelationSpec) -> String {
+        match spec {
+            RelationSpec::Binding {
+                state_account_type, pubkey_field, ..
+            } => format!(
+                "helper_{}_{}_binding",
+                to_snake_case(state_account_type),
+                sanitize_ident(pubkey_field)
+            ),
+            RelationSpec::SupplyMint {
+                state_account_type, mint_account_name, ..
+            } => format!(
+                "helper_{}_matches_{}_supply",
+                to_snake_case(state_account_type),
+                sanitize_ident(mint_account_name)
+            ),
+            RelationSpec::FeeMonotone { field, .. } => {
+                format!("helper_{}_monotone", sanitize_ident(field))
+            }
+            RelationSpec::VaultBinding { vault_account_name, .. } => format!(
+                "helper_{}_ownership_binding",
+                sanitize_ident(vault_account_name)
+            ),
+            RelationSpec::MintAuthority { mint_account_name, .. } => format!(
+                "helper_{}_mint_authority",
+                sanitize_ident(mint_account_name)
+            ),
+        }
+    }
+
+    /// Check that every named account in the spec appears in the
+    /// generator's roles map (i.e. is visible in some supported
+    /// instruction). Returns a short reason on failure.
+    fn check_spec_visible(&self, spec: &RelationSpec) -> Result<(), &'static str> {
+        let names: Vec<&str> = match spec {
+            RelationSpec::Binding {
+                state_account_name,
+                bound_account_name,
+                ..
+            } => vec![state_account_name.as_str(), bound_account_name.as_str()],
+            RelationSpec::SupplyMint {
+                state_account_name,
+                mint_account_name,
+                ..
+            } => vec![state_account_name.as_str(), mint_account_name.as_str()],
+            RelationSpec::FeeMonotone {
+                state_account_name, ..
+            } => vec![state_account_name.as_str()],
+            RelationSpec::VaultBinding {
+                vault_account_name,
+                expected_mint_name,
+                expected_owner_name,
+                ..
+            } => vec![
+                vault_account_name.as_str(),
+                expected_mint_name.as_str(),
+                expected_owner_name.as_str(),
+            ],
+            RelationSpec::MintAuthority {
+                mint_account_name,
+                expected_authority_name,
+            } => vec![
+                mint_account_name.as_str(),
+                expected_authority_name.as_str(),
+            ],
+        };
+        for n in names {
+            if !self.roles.contains_key(n) {
+                return Err("account not present in any supported instruction");
+            }
+        }
+        Ok(())
+    }
+
+    /// Render ONE relation spec as a plain helper fn `fn
+    /// helper_<name>(fixture: &mut <Fixture>)` that runs its
+    /// `fuzz_assert_*` calls. Bundle invariant_test dispatches to
+    /// these; assertion failures propagate through Crucible's macro.
+    fn render_relation_helper(
+        &self,
+        spec: &RelationSpec,
+    ) -> Result<(String, String), EmitError> {
+        let fixture_name = self.fixture_name("Relations");
+        // Byte-level comparison for SPL Pubkey (a different concrete
+        // type than solana_pubkey::Pubkey — they share the 32-byte
+        // layout but Rust's type system rejects direct ==). We convert
+        // via `.to_bytes()` so both sides are `[u8; 32]`.
+        Ok(match spec {
+            RelationSpec::Binding {
+                state_account_type,
+                state_account_name,
+                pubkey_field,
+                bound_account_name,
+            } => {
+                let ty_ident = capitalize_snake(state_account_type);
+                let field_id = sanitize_ident(pubkey_field);
+                let state_addr = self.role_expr(state_account_name, false).replace("self.", "fixture.");
+                let bound_addr = self.role_expr(bound_account_name, false).replace("self.", "fixture.");
+                let fn_name = format!(
+                    "helper_{}_{}_binding",
+                    to_snake_case(state_account_type),
+                    field_id
+                );
+                let body = format!(
+                    "/// RC-A (name binding): {state_account_type}.{pubkey_field} == {bound_account_name}.key\n\
+                     fn {fn_name}(fixture: &mut {fixture_name}) {{\n\
+                     \x20   let acct: {ty_ident} = match fixture.ctx.read_anchor_account::<{ty_ident}>(&{state_addr}) {{\n\
+                     \x20       Ok(a) => a, Err(_) => return,\n\
+                     \x20   }};\n\
+                     \x20   fuzz_assert_eq!(acct.{field_id}, {bound_addr},\n\
+                     \x20       \"{state_account_type}.{pubkey_field} decoupled from `{bound_account_name}`\");\n\
+                     }}\n"
+                );
+                (fn_name, body)
+            }
+            RelationSpec::SupplyMint {
+                state_account_type,
+                state_account_name,
+                supply_field,
+                mint_account_name,
+            } => {
+                let ty_ident = capitalize_snake(state_account_type);
+                let field_id = sanitize_ident(supply_field);
+                let state_addr = self.role_expr(state_account_name, false).replace("self.", "fixture.");
+                let mint_addr = self.role_expr(mint_account_name, false).replace("self.", "fixture.");
+                let baseline_id = format!(
+                    "{}_{}",
+                    sanitize_ident(supply_field),
+                    sanitize_ident(mint_account_name)
+                );
+                let fn_name = format!(
+                    "helper_{}_matches_{}_supply",
+                    to_snake_case(state_account_type),
+                    sanitize_ident(mint_account_name)
+                );
+                // R3 closure A: when a baseline drift was seeded from the
+                // snapshot at setup time, assert drift-preservation (the
+                // program should never change one side without the other).
+                // Fall back to strict-equality only when no baseline was
+                // captured (blank SVM, no snapshot dir).
+                let body = format!(
+                    "/// RC-D (cross-program supply, drift-preserving): (mint.supply - state.{supply_field}) stable across actions.\n\
+                     /// Falls back to strict equality when no baseline was seeded (no snapshot dir).\n\
+                     fn {fn_name}(fixture: &mut {fixture_name}) {{\n\
+                     \x20   let acct: {ty_ident} = match fixture.ctx.read_anchor_account::<{ty_ident}>(&{state_addr}) {{\n\
+                     \x20       Ok(a) => a, Err(_) => return,\n\
+                     \x20   }};\n\
+                     \x20   let mint_bytes = match fixture.ctx.svm.get_account(&{mint_addr}) {{\n\
+                     \x20       Some(a) if a.data.len() >= spl_token::state::Mint::LEN => a.data.clone(),\n\
+                     \x20       _ => return,\n\
+                     \x20   }};\n\
+                     \x20   let mint = match spl_token::state::Mint::unpack(&mint_bytes) {{ Ok(m) => m, Err(_) => return }};\n\
+                     \x20   match fixture.baseline_delta_{baseline_id} {{\n\
+                     \x20       Some(base) => {{\n\
+                     \x20           let current = mint.supply as i128 - acct.{field_id} as i128;\n\
+                     \x20           fuzz_assert_eq!(current, base,\n\
+                     \x20               \"{state_account_type}.{supply_field} vs SPL Mint({mint_account_name}).supply drift changed: baseline={{}} current={{}}\", base, current);\n\
+                     \x20       }}\n\
+                     \x20       None => {{\n\
+                     \x20           fuzz_assert_eq!(acct.{field_id}, mint.supply,\n\
+                     \x20               \"{state_account_type}.{supply_field}={{}} but SPL Mint({mint_account_name}).supply={{}}\", acct.{field_id}, mint.supply);\n\
+                     \x20       }}\n\
+                     \x20   }}\n\
+                     }}\n"
+                );
+                (fn_name, body)
+            }
+            RelationSpec::FeeMonotone {
+                state_account_type,
+                state_account_name,
+                field,
+            } => {
+                let ty_ident = capitalize_snake(state_account_type);
+                let field_id = sanitize_ident(field);
+                let state_addr = self.role_expr(state_account_name, false).replace("self.", "fixture.");
+                let fn_name = format!("helper_{field_id}_monotone");
+                let body = format!(
+                    "/// RC-E (monotonicity): {state_account_type}.{field} never decreases between observations.\n\
+                     fn {fn_name}(fixture: &mut {fixture_name}) {{\n\
+                     \x20   let acct: {ty_ident} = match fixture.ctx.read_anchor_account::<{ty_ident}>(&{state_addr}) {{\n\
+                     \x20       Ok(a) => a, Err(_) => return,\n\
+                     \x20   }};\n\
+                     \x20   fuzz_assert_le!(fixture.prev_{field_id}, acct.{field_id},\n\
+                     \x20       \"{state_account_type}.{field} regressed: {{}} -> {{}}\", fixture.prev_{field_id}, acct.{field_id});\n\
+                     \x20   fixture.prev_{field_id} = acct.{field_id};\n\
+                     }}\n"
+                );
+                (fn_name, body)
+            }
+            RelationSpec::VaultBinding {
+                vault_account_name,
+                expected_mint_name,
+                expected_owner_name,
+            } => {
+                let vault_addr = self.role_expr(vault_account_name, false).replace("self.", "fixture.");
+                let mint_addr = self.role_expr(expected_mint_name, false).replace("self.", "fixture.");
+                let owner_addr = self.role_expr(expected_owner_name, false).replace("self.", "fixture.");
+                let fn_name = format!(
+                    "helper_{}_ownership_binding",
+                    sanitize_ident(vault_account_name)
+                );
+                let body = format!(
+                    "/// RC-G (SPL vault): TokenAccount({vault_account_name}).mint == {expected_mint_name} AND .owner == {expected_owner_name}\n\
+                     fn {fn_name}(fixture: &mut {fixture_name}) {{\n\
+                     \x20   let bytes = match fixture.ctx.svm.get_account(&{vault_addr}) {{\n\
+                     \x20       Some(a) if a.data.len() >= spl_token::state::Account::LEN => a.data.clone(),\n\
+                     \x20       _ => return,\n\
+                     \x20   }};\n\
+                     \x20   let acct = match spl_token::state::Account::unpack(&bytes) {{ Ok(a) => a, Err(_) => return }};\n\
+                     \x20   fuzz_assert_eq!(acct.mint.to_bytes(), {mint_addr}.to_bytes(),\n\
+                     \x20       \"{vault_account_name}.mint drift (expected {expected_mint_name})\");\n\
+                     \x20   fuzz_assert_eq!(acct.owner.to_bytes(), {owner_addr}.to_bytes(),\n\
+                     \x20       \"{vault_account_name}.owner drift (expected {expected_owner_name})\");\n\
+                     }}\n"
+                );
+                (fn_name, body)
+            }
+            RelationSpec::MintAuthority {
+                mint_account_name,
+                expected_authority_name,
+            } => {
+                let mint_addr = self.role_expr(mint_account_name, false).replace("self.", "fixture.");
+                let auth_addr = self.role_expr(expected_authority_name, false).replace("self.", "fixture.");
+                let fn_name = format!(
+                    "helper_{}_mint_authority",
+                    sanitize_ident(mint_account_name)
+                );
+                let body = format!(
+                    "/// RC-I (mint authority): Mint::unpack({mint_account_name}).mint_authority == Some({expected_authority_name})\n\
+                     fn {fn_name}(fixture: &mut {fixture_name}) {{\n\
+                     \x20   let bytes = match fixture.ctx.svm.get_account(&{mint_addr}) {{\n\
+                     \x20       Some(a) if a.data.len() >= spl_token::state::Mint::LEN => a.data.clone(),\n\
+                     \x20       _ => return,\n\
+                     \x20   }};\n\
+                     \x20   let mint = match spl_token::state::Mint::unpack(&bytes) {{ Ok(m) => m, Err(_) => return }};\n\
+                     \x20   let observed = mint.mint_authority.map(|k| k.to_bytes()).unwrap_or_default();\n\
+                     \x20   fuzz_assert_eq!(observed, {auth_addr}.to_bytes(),\n\
+                     \x20       \"{mint_account_name}.mint_authority drift (expected {expected_authority_name})\");\n\
+                     }}\n"
+                );
+                (fn_name, body)
+            }
+        })
+    }
+
     fn check_tracked_field_scalar(&self) -> Result<(), EmitError> {
         let h = &self.candidate.emit_hints;
         let tdef = self.type_def(&h.account_type)?;
@@ -1636,6 +2446,40 @@ fn range_attr(ty: &IdlType) -> Option<&'static str> {
         IdlType::U16 => Some("1..50_000"),
         IdlType::U32 | IdlType::U64 | IdlType::U128 => Some("1..1_000_000"),
         _ => None,
+    }
+}
+
+/// Per-arg-name range override — used for arguments whose semantics are
+/// "upper slippage bound" / "lower slippage bound" rather than "amount".
+/// Against snapshot-loaded state whose reserves may sit far above 1e6,
+/// the deposit / swap slippage guards need much larger upper bounds to
+/// have any chance of admitting a successful call (R3 §1.3). Names
+/// covered are the industry-standard Solana AMM patterns.
+fn range_attr_for_arg(arg_name: &str, ty: &IdlType) -> Option<String> {
+    let lower = arg_name.to_ascii_lowercase();
+    let is_upper_bound = lower.starts_with("max_")
+        || lower.starts_with("maximum_")
+        || lower.ends_with("_max")
+        || lower.ends_with("_maximum")
+        || lower.ends_with("_limit")
+        || lower.contains("max_amount");
+    let is_lower_bound = lower.starts_with("min_")
+        || lower.starts_with("minimum_")
+        || lower.ends_with("_min")
+        || lower.ends_with("_minimum")
+        || lower.contains("min_amount")
+        || lower.contains("minimum_amount");
+    match ty {
+        IdlType::U32 | IdlType::U64 | IdlType::U128 if is_upper_bound => {
+            // Loose upper slippage bound: allow the call to admit any
+            // amount the pool math computes.
+            Some("(u64::MAX / 2)..u64::MAX".to_string())
+        }
+        IdlType::U32 | IdlType::U64 | IdlType::U128 if is_lower_bound => {
+            // Loose lower slippage bound: 1..2 accepts almost any output.
+            Some("1..2".to_string())
+        }
+        _ => range_attr(ty).map(|s| s.to_string()),
     }
 }
 

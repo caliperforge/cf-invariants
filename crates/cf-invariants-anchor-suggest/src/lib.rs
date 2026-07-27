@@ -20,16 +20,17 @@
 
 use cf_invariants_anchor_core::{
     ContractSurface, EmitHints, IdlType, Instruction, InvariantCandidate, InvariantSource,
-    LedgerMove,
+    LedgerMove, RelationSpec, TypeDef, TypeDefBody,
 };
 
-pub const SUGGESTER_VERSION: &str = "0.2.0";
+pub const SUGGESTER_VERSION: &str = "0.3.0";
 
 // Class identifiers, hoisted into constants so emit + the AI prompt +
 // the renderer all key off the same string and a typo can't drift.
 pub const CLASS_BALANCE_CONSERVATION: &str = "balance_conservation";
 pub const CLASS_MONOTONIC_ACCOUNTING: &str = "monotonic_accounting";
 pub const CLASS_ACCESS_CONTROL: &str = "access_control";
+pub const CLASS_RELATION_INVARIANTS: &str = "relation_invariants";
 
 /// One pluggable invariant class.
 pub trait InvariantClass {
@@ -57,12 +58,13 @@ impl ClassRegistry {
         r
     }
 
-    /// Current default: all three shipping classes.
+    /// Current default: all four shipping classes.
     pub fn default() -> Self {
         let mut r = Self::empty();
         r.register(Box::new(BalanceConservation));
         r.register(Box::new(MonotonicAccounting));
         r.register(Box::new(AccessControl));
+        r.register(Box::new(RelationInvariants));
         r
     }
 
@@ -151,6 +153,8 @@ impl InvariantClass for BalanceConservation {
                 expected_expression: format!("fixture.expected_{}", f.field),
                 action_names: movement.iter().map(|s| s.to_string()).collect(),
                 ledger_moves: ledger_moves(surface),
+                relation_specs: vec![],
+                suppressed_specs: vec![],
             };
             candidates.push(InvariantCandidate {
                 name: invariant_name,
@@ -236,6 +240,8 @@ impl InvariantClass for MonotonicAccounting {
                 expected_expression: format!("fixture.last_seen_{}", f.field),
                 action_names: movement.iter().map(|s| s.to_string()).collect(),
                 ledger_moves: vec![],
+                relation_specs: vec![],
+                suppressed_specs: vec![],
             };
             candidates.push(InvariantCandidate {
                 name: invariant_name,
@@ -393,6 +399,8 @@ impl InvariantClass for AccessControl {
                 // Positive-direction moves seed observable state before
                 // the attack probes.
                 ledger_moves: ledger_moves(surface),
+                relation_specs: vec![],
+                suppressed_specs: vec![],
             };
             candidates.push(InvariantCandidate {
                 name: invariant_name,
@@ -442,6 +450,371 @@ fn pick_authority_field(surface: &ContractSurface) -> String {
     }
     // Default: the convention vault_ref uses.
     "depositor".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Class 4: relation_invariants (R2 — the multi-field / token-account lift).
+// ---------------------------------------------------------------------------
+
+/// Emits one bundle candidate per movement / mutation instruction that
+/// surfaces at least one derivable relation. Each spec inside the bundle
+/// is one non-trivial invariant the emitter turns into a distinct
+/// `#[invariant_test]` fn. The classes here are exactly the R2a spec's
+/// derivable set (RC-A, RC-D, RC-E, RC-G, RC-I), keyed off IDL structure:
+///
+///   - **RC-A (Binding)** — for each program-owned state struct S read in
+///     an instruction I, and for each pubkey field on S whose *name*
+///     matches an instruction-account name in I, emit
+///     `S.<field> == <account>.key`.
+///   - **RC-D (SupplyMint)** — for each `*supply` u64 field on S whose
+///     naming pairs with a `*_mint` / `share_mint` / `lp_mint`
+///     instruction account, emit
+///     `S.<supply_field> == Mint::unpack(<mint>).supply`.
+///   - **RC-E (FeeMonotone)** — for each `*fee*`, `*accumulator`,
+///     `cumulative_*`, `total_*_collected` u64 on S, emit
+///     `prev(<field>) <= current(<field>)`.
+///   - **RC-G (VaultBinding)** — for each `*vault*` instruction account
+///     paired with a matching `*mint` and an `authority` in the same
+///     instruction, emit `TokenAccount(<vault>).mint == <mint>` and
+///     `TokenAccount(<vault>).owner == <authority>`.
+///   - **RC-I (MintAuthority)** — for each `*mint*` instruction account
+///     paired with an `authority`, emit
+///     `Mint::unpack(<mint>).mint_authority == Some(<authority>)`.
+///
+/// De-duplication: relation specs are keyed by their tuple contents;
+/// each unique tuple appears at most once in the emitted bundle.
+pub struct RelationInvariants;
+
+impl InvariantClass for RelationInvariants {
+    fn class_id(&self) -> &'static str {
+        CLASS_RELATION_INVARIANTS
+    }
+
+    fn propose(&self, surface: &ContractSurface) -> Vec<InvariantCandidate> {
+        let mut specs: Vec<RelationSpec> = Vec::new();
+
+        for ix in &surface.instructions {
+            // Skip loud-exclusion instructions the emitter won't render
+            // anyway (admin-pinned signers, unrenderable args). We can't
+            // easily replicate `instruction_supported` here without
+            // pulling emit as a dep; the emitter filters again downstream
+            // so any speck we emit for an excluded ix is a no-op.
+            let acct_names: Vec<&str> =
+                ix.account_defs.iter().map(|a| a.name.as_str()).collect();
+            if acct_names.is_empty() {
+                continue;
+            }
+            for state_acct in &ix.account_defs {
+                let state_ty = match match_state_type(surface, &state_acct.name) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let tdef = match struct_type_def(surface, &state_ty) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let fields = match &tdef.body {
+                    TypeDefBody::Struct { fields } => fields,
+                    _ => continue,
+                };
+
+                // RC-A: pubkey-field <-> sibling account-name binding.
+                for f in fields {
+                    if !matches!(f.ty, IdlType::Pubkey) {
+                        continue;
+                    }
+                    if acct_names.contains(&f.name.as_str())
+                        && f.name != state_acct.name
+                    {
+                        let spec = RelationSpec::Binding {
+                            state_account_type: state_ty.clone(),
+                            state_account_name: state_acct.name.clone(),
+                            pubkey_field: f.name.clone(),
+                            bound_account_name: f.name.clone(),
+                        };
+                        push_unique(&mut specs, spec);
+                    }
+                }
+
+                // RC-D: supply-vs-mint (paired with a `*mint*` sibling).
+                for f in fields {
+                    if !is_u64(&f.ty) {
+                        continue;
+                    }
+                    if !looks_supply(&f.name) {
+                        continue;
+                    }
+                    if let Some(mint) = pick_mint_sibling(&acct_names, &f.name) {
+                        let spec = RelationSpec::SupplyMint {
+                            state_account_type: state_ty.clone(),
+                            state_account_name: state_acct.name.clone(),
+                            supply_field: f.name.clone(),
+                            mint_account_name: mint.to_string(),
+                        };
+                        push_unique(&mut specs, spec);
+                    }
+                }
+
+                // RC-E: fee-accumulator monotonicity. Excluded from
+                // instructions that legitimately DECREASE the field
+                // (collect_*, withdraw_fee_*, etc).
+                if legitimately_resets_fees(&ix.name) {
+                    // Do not emit a FeeMonotone spec from an instruction
+                    // whose whole purpose is to decrement — but do emit
+                    // from other instructions with the same state read.
+                    continue;
+                }
+                for f in fields {
+                    if !is_u64(&f.ty) {
+                        continue;
+                    }
+                    if !looks_fee_accumulator(&f.name) {
+                        continue;
+                    }
+                    let spec = RelationSpec::FeeMonotone {
+                        state_account_type: state_ty.clone(),
+                        state_account_name: state_acct.name.clone(),
+                        field: f.name.clone(),
+                    };
+                    push_unique(&mut specs, spec);
+                }
+            }
+
+            // RC-G: vault <-> mint + owner binding. Requires an authority
+            // sibling in the same instruction (the pool authority PDA).
+            let auth_acct = acct_names
+                .iter()
+                .find(|a| **a == "authority" || a.ends_with("_authority"))
+                .copied();
+            if let Some(authority) = auth_acct {
+                for vault_name in acct_names.iter().filter(|a| looks_vault(a)) {
+                    // Vault-binding: require an EXACT prefix-matched
+                    // mint. The fallback (lp_mint) would be wrong: a
+                    // vault holds one of the paired tokens, not the LP.
+                    if let Some(mint) = pick_prefix_mint_sibling(&acct_names, vault_name) {
+                        let spec = RelationSpec::VaultBinding {
+                            vault_account_name: vault_name.to_string(),
+                            expected_mint_name: mint.to_string(),
+                            expected_owner_name: authority.to_string(),
+                        };
+                        push_unique(&mut specs, spec);
+                    }
+                }
+
+                // RC-I: mint-authority binding. Restricted to plausibly
+                // program-owned mints (LP / share / pool). Firing on
+                // user-token mints would false-fail because those carry
+                // unrelated authorities.
+                for mint_name in acct_names
+                    .iter()
+                    .filter(|a| looks_program_owned_mint(a) && !looks_vault(a))
+                {
+                    let spec = RelationSpec::MintAuthority {
+                        mint_account_name: mint_name.to_string(),
+                        expected_authority_name: authority.to_string(),
+                    };
+                    push_unique(&mut specs, spec);
+                }
+            }
+        }
+
+        if specs.is_empty() {
+            return vec![];
+        }
+
+        // Rank: relation bundles score above single-scalar conservation
+        // because their assertions bind ≥2 fields or a token account.
+        let summary = format!(
+            "{} relation invariants (RC-A/D/E/G/I) across {} shape(s)",
+            specs.len(),
+            distinct_kinds(&specs)
+        );
+        let rationale = format!(
+            "Detected {} derivable relations from the IDL + account layout: \
+             cross-account pubkey bindings (RC-A), cross-program supply-vs-mint \
+             conservation (RC-D), fee-accumulator monotonicity (RC-E), token \
+             account ownership/mint binding (RC-G), and SPL mint-authority \
+             binding (RC-I). Each spec turns into an independent \
+             `#[invariant_test]` fn in the emitted fixture; the assertions \
+             read live SPL state (Mint::unpack / Account::unpack) so a bug \
+             that decouples the program's ledger from the actual SPL state \
+             trips the invariant.",
+            specs.len(),
+        );
+        let hints = EmitHints {
+            account_type: String::new(),
+            field: String::new(),
+            expected_expression: String::new(),
+            action_names: surface
+                .instructions
+                .iter()
+                .map(|i| i.name.clone())
+                .collect(),
+            ledger_moves: vec![],
+            relation_specs: specs,
+            suppressed_specs: vec![],
+        };
+        vec![InvariantCandidate {
+            name: "invariant_relation_bundle".to_string(),
+            summary,
+            class: self.class_id().to_string(),
+            rank: 0.95,
+            rationale,
+            emit_hints: hints,
+            source: InvariantSource::Heuristic {
+                suggester_version: SUGGESTER_VERSION.to_string(),
+            },
+        }]
+    }
+}
+
+fn push_unique(v: &mut Vec<RelationSpec>, spec: RelationSpec) {
+    if !v.contains(&spec) {
+        v.push(spec);
+    }
+}
+
+fn distinct_kinds(specs: &[RelationSpec]) -> usize {
+    let mut s = std::collections::BTreeSet::new();
+    for x in specs {
+        s.insert(match x {
+            RelationSpec::Binding { .. } => "binding",
+            RelationSpec::SupplyMint { .. } => "supply_mint",
+            RelationSpec::FeeMonotone { .. } => "fee_monotone",
+            RelationSpec::VaultBinding { .. } => "vault_binding",
+            RelationSpec::MintAuthority { .. } => "mint_authority",
+        });
+    }
+    s.len()
+}
+
+/// The IDL does not link instruction accounts to state-account types.
+/// Bind by snake_case name equality — the same rule the emitter's
+/// `tracked_account_binding` uses. Returns `Some(type_name)` iff the
+/// name matches an entry in `surface.account_types`.
+fn match_state_type(surface: &ContractSurface, ix_acct_name: &str) -> Option<String> {
+    let want = ix_acct_name.to_ascii_lowercase();
+    for at in &surface.account_types {
+        if to_snake(&at.name) == want {
+            return Some(at.name.clone());
+        }
+    }
+    None
+}
+
+fn struct_type_def<'a>(surface: &'a ContractSurface, name: &str) -> Option<&'a TypeDef> {
+    surface.type_defs.iter().find(|t| t.name == name)
+}
+
+fn is_u64(ty: &IdlType) -> bool {
+    matches!(ty, IdlType::U64)
+}
+
+fn looks_supply(n: &str) -> bool {
+    let l = n.to_ascii_lowercase();
+    l == "lp_supply"
+        || l == "total_supply"
+        || l == "total_shares"
+        || l == "supply"
+        || l.ends_with("_supply")
+        || l == "total_liquidity"
+}
+
+fn looks_fee_accumulator(n: &str) -> bool {
+    let l = n.to_ascii_lowercase();
+    // Do not match `*_fee_rate` — those are configs, not accumulators.
+    if l.ends_with("_rate") || l.ends_with("_bps") || l.ends_with("_fee_rate") {
+        return false;
+    }
+    l.contains("_fee")
+        || l.ends_with("_accumulator")
+        || l.starts_with("cumulative_")
+        || l.contains("_collected")
+        || l.contains("_paid")
+}
+
+fn legitimately_resets_fees(ix_name: &str) -> bool {
+    let l = ix_name.to_ascii_lowercase();
+    l.starts_with("collect_")
+        || l.starts_with("withdraw_fee")
+        || l.starts_with("reset_")
+        || l.starts_with("skim_")
+        || l.contains("_collect_fee")
+}
+
+fn looks_vault(name: &str) -> bool {
+    // Strict: end-with markers only, so `vault_0_mint` is NOT classified
+    // as a vault (it is a mint). `*_vault`, `input_vault`, `output_vault`,
+    // `*_reserve` all qualify; anything else does not.
+    let l = name.to_ascii_lowercase();
+    l.ends_with("_vault") || l == "vault" || l.ends_with("_reserve")
+}
+
+/// True for names that are plausibly a program-owned SPL Mint (LP,
+/// share, pool) — the ONLY mints whose `mint_authority` is expected to
+/// bind to a program authority PDA. User-facing mints (USDC, etc.)
+/// carry unrelated authorities and would false-fail if RC-I fired.
+fn looks_program_owned_mint(name: &str) -> bool {
+    let l = name.to_ascii_lowercase();
+    l == "lp_mint"
+        || l == "share_mint"
+        || l == "pool_mint"
+        || l.starts_with("lp_")
+        || l.ends_with("_lp_mint")
+        || l.ends_with("_share_mint")
+        || l.ends_with("_pool_mint")
+}
+
+/// For a supply/vault field named e.g. `lp_supply` or `token_0_vault`,
+/// pick the sibling instruction account that plausibly is its Mint.
+///
+/// Preference order — most specific first:
+///   1. Exact prefix rewrite: `lp_supply` -> `lp_mint`; `token_0_vault`
+///      -> `token_0_mint`. Handles the flagship CP-Swap shape.
+///   2. Fallback: a program-owned mint sibling (LP / share / pool).
+fn pick_mint_sibling<'a>(acct_names: &[&'a str], target_field: &str) -> Option<&'a str> {
+    if let Some(a) = pick_prefix_mint_sibling(acct_names, target_field) {
+        return Some(a);
+    }
+    // Weaker fallback: a sibling name-ending in `_mint` (not user-tokens
+    // — those are `input_token_mint`, `output_token_mint`, which pair
+    // supply with the wrong side of the swap). Restricted to program-
+    // owned mint names so RC-D does not false-fire.
+    acct_names
+        .iter()
+        .find(|a| looks_program_owned_mint(a))
+        .copied()
+}
+
+/// Prefix-only pick: `lp_supply` -> `lp_mint`; `token_0_vault` ->
+/// `token_0_mint`. No fallback — returns None if no prefix match.
+fn pick_prefix_mint_sibling<'a>(acct_names: &[&'a str], target_field: &str) -> Option<&'a str> {
+    let low = target_field.to_ascii_lowercase();
+    for (suffix, mint) in [
+        ("_supply", "_mint"),
+        ("_vault", "_mint"),
+        ("_reserve", "_mint"),
+    ] {
+        if low.ends_with(suffix) {
+            let base = &low[..low.len() - suffix.len()];
+            let want = format!("{base}{mint}");
+            if let Some(a) = acct_names.iter().find(|a| a.to_ascii_lowercase() == want) {
+                return Some(a);
+            }
+        }
+    }
+    None
+}
+
+fn to_snake(camel: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in camel.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
 }
 
 #[cfg(test)]

@@ -107,6 +107,21 @@ enum Command {
         /// v0.2.0 checkout, relative to the scaffold dir.
         #[arg(long, default_value = "../crucible")]
         crucible_path: String,
+        /// Path (relative to the harness crate) of a mainnet account
+        /// snapshot directory. If set, the fixture preloads every
+        /// `snapshot_<pubkey>.json` here into the SVM at setup and
+        /// rebinds `a_<idl_name>` locals per a `manifest.json`
+        /// aliases map, so instructions run against real state.
+        /// (R2b, per T-P031-R2a spec §snapshot ingestion.)
+        #[arg(long)]
+        snapshot_dir: Option<String>,
+        /// Suppress one or more relation specs by helper-fn name (or a
+        /// prefix of one). Repeatable. Use for validated-by-design
+        /// findings you don't want failing every seed (R3 closure B) —
+        /// e.g. `--suppress-spec helper_pool_state_matches_lp_mint_supply`
+        /// to silence CP-Swap's MINIMUM_LIQUIDITY-lockup RC-D drift.
+        #[arg(long = "suppress-spec")]
+        suppress_spec: Vec<String>,
     },
 }
 
@@ -151,12 +166,22 @@ async fn main() -> Result<()> {
             program_so,
             scaffold_dir,
             crucible_path,
+            snapshot_dir,
+            suppress_spec,
         } => {
             let surface = cf_invariants_anchor_idl::ingest_path(&idl)?;
             let candidates = ClassRegistry::default().propose_all(&surface);
-            let candidate = candidates
+            let mut candidate = candidates
                 .get(candidate_index)
-                .ok_or_else(|| anyhow::anyhow!("no candidate at index {candidate_index}"))?;
+                .ok_or_else(|| anyhow::anyhow!("no candidate at index {candidate_index}"))?
+                .clone();
+            // R3 closure B: inject the CLI-provided suppression list into
+            // the candidate's EmitHints. The emitter filters spec-by-spec
+            // (matched by helper-fn name / prefix) inside render_relation_bundle.
+            if !suppress_spec.is_empty() {
+                candidate.emit_hints.suppressed_specs.extend(suppress_spec.iter().cloned());
+            }
+            let candidate = &candidate;
             let target = parse_target(&target)?;
             let opts = cf_invariants_anchor_emit::EmitOptions {
                 program_so: program_so.or_else(|| {
@@ -164,6 +189,7 @@ async fn main() -> Result<()> {
                         .as_ref()
                         .map(|_| format!("./{}.so", surface.program_name))
                 }),
+                snapshot_dir: snapshot_dir.clone(),
             };
             let rendered =
                 cf_invariants_anchor_emit::render_with_options(&surface, candidate, target, &opts)
@@ -359,6 +385,10 @@ libafl_bolts = {{ version = "0.15.1", features = ["std"] }}
 solana-keypair = "3.0"
 solana-pubkey = "3.0"
 solana-signer = "3.0"
+# R2b: SPL Mint / Account unpack for relation invariants; serde_json for
+# the mainnet-snapshot preload manifest reader in setup().
+spl-token = {{ version = "6", features = ["no-entrypoint"] }}
+serde_json = "1"
 
 [[bin]]
 name = "invariant_test"
