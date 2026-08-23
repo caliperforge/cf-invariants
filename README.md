@@ -1,6 +1,6 @@
-# cf-invariants-anchor
+# cf-invariants
 
-[![ci](https://github.com/caliperforge/cf-invariants-anchor/actions/workflows/ci.yml/badge.svg)](https://github.com/caliperforge/cf-invariants-anchor/actions/workflows/ci.yml)
+[![ci](https://github.com/caliperforge/cf-invariants/actions/workflows/ci.yml/badge.svg)](https://github.com/caliperforge/cf-invariants/actions/workflows/ci.yml)
 
 **The AI invariant-author for [Crucible](https://github.com/asymmetric-research/crucible) and [Trident](https://github.com/Ackee-Blockchain/trident) on Solana / Anchor.**
 
